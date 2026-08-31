@@ -1,0 +1,31 @@
+services:
+  remnawave-traffic-limiter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: remnawave-traffic-limiter
+    env_file:
+      - .env
+    environment:
+      PORT: ${PORT:-8080}
+      DATABASE_PATH: /data/state.sqlite
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - remnawave_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:${PORT:-8080}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  remnawave_data:

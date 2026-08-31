@@ -1,0 +1,28 @@
+# Binaries
+/bin/
+*.exe
+
+# Build artifacts
+coverage.out
+.tmp-go-cache/
+__pycache__/
+*.py[cod]
+*.zip
+*.bak
+*.tmp
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Local env
+.env
+
+# SQLite
+*.sqlite
+*.sqlite3
+
+# Go
+*.test
+*.out

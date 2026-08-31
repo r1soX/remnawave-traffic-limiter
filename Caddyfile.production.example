@@ -1,0 +1,22 @@
+# Production reverse proxy for a limiter running on the same host.
+# Replace LIMITER_PUBLIC_DOMAIN with a real DNS name pointing to this server.
+
+LIMITER_PUBLIC_DOMAIN {
+	encode zstd gzip
+
+	# Subscription responses can be large and may contain client credentials.
+	# Keep them out of normal access logs.
+	@subscription path /sub/*
+	log_skip @subscription
+
+	# Only endpoints that must be reachable by external systems are published.
+	@limiter_public path /webhook /sub/* /api/pairing/*
+	handle @limiter_public {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Diagnostics remain available only through SSH/localhost and their token.
+	handle {
+		respond "not found" 404
+	}
+}
