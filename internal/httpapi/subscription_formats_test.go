@@ -180,6 +180,34 @@ func TestMergeJSONSubscriptions(t *testing.T) {
 	}
 }
 
+func TestMergeJSONArraySubscriptions(t *testing.T) {
+	main := []byte(`[
+  {"tag":"Auto","type":"selector","outbounds":["Main NL"]},
+  {"tag":"Main NL","type":"vless","server":"main.example"}
+]`)
+	white := []byte(`[
+  {"tag":"Auto","type":"selector","outbounds":["WhiteList NL"]},
+  {"tag":"WhiteList NL","type":"vless","server":"white.example"}
+]`)
+	merged, err := mergeJSONSubscriptions(main, white)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document []struct {
+		Tag       string   `json:"tag"`
+		Outbounds []string `json:"outbounds"`
+	}
+	if err := json.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document) != 3 {
+		t.Fatalf("outbounds count = %d, want 3", len(document))
+	}
+	if got := strings.Join(document[0].Outbounds, ","); got != "Main NL,WhiteList NL" {
+		t.Fatalf("selector outbounds = %q", got)
+	}
+}
+
 func TestMergeSubscriptionsUsesResponseContentType(t *testing.T) {
 	main := &subscriptionResponse{
 		body:   []byte("proxies: []\nproxy-groups: []\n"),

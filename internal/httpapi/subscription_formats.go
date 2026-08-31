@@ -456,6 +456,23 @@ func yamlNodesEqual(left, right *yaml.Node) bool {
 // in the WhiteList document are namespaced so both independently configured
 // servers remain reachable.
 func mergeJSONSubscriptions(main, white []byte) ([]byte, error) {
+	mainRoot, err := jsonRootKind(main)
+	if err != nil {
+		return nil, fmt.Errorf("decode Main JSON: %w", err)
+	}
+	whiteRoot, err := jsonRootKind(white)
+	if err != nil {
+		return nil, fmt.Errorf("decode WhiteList JSON: %w", err)
+	}
+	if mainRoot != whiteRoot {
+		return nil, fmt.Errorf("JSON root type differs between Main and WhiteList")
+	}
+	if mainRoot == jsonRootArray {
+		return mergeJSONArraySubscriptions(main, white)
+	}
+	if mainRoot != jsonRootObject {
+		return nil, fmt.Errorf("JSON root must be an object or an array")
+	}
 	mainDocument, err := decodeJSONObject(main)
 	if err != nil {
 		return nil, fmt.Errorf("decode Main JSON: %w", err)
@@ -487,6 +504,90 @@ func mergeJSONSubscriptions(main, white []byte) ([]byte, error) {
 		}
 	}
 	return json.Marshal(mainDocument)
+}
+
+type jsonRootType uint8
+
+const (
+	jsonRootUnknown jsonRootType = iota
+	jsonRootObject
+	jsonRootArray
+)
+
+func jsonRootKind(body []byte) (jsonRootType, error) {
+	body = bytes.TrimSpace(body)
+	if !json.Valid(body) {
+		return jsonRootUnknown, fmt.Errorf("invalid JSON")
+	}
+	if len(body) == 0 {
+		return jsonRootUnknown, fmt.Errorf("empty JSON")
+	}
+	switch body[0] {
+	case '{':
+		return jsonRootObject, nil
+	case '[':
+		return jsonRootArray, nil
+	default:
+		return jsonRootUnknown, nil
+	}
+}
+
+// Some Xray-family templates return the outbounds themselves as a JSON array
+// rather than enclosing them in an {"outbounds": [...]} object.  Merge that
+// representation with exactly the same tag and selector semantics.
+func mergeJSONArraySubscriptions(main, white []byte) ([]byte, error) {
+	var mainItems []json.RawMessage
+	var whiteItems []json.RawMessage
+	if err := json.Unmarshal(main, &mainItems); err != nil {
+		return nil, fmt.Errorf("decode Main JSON array: %w", err)
+	}
+	if err := json.Unmarshal(white, &whiteItems); err != nil {
+		return nil, fmt.Errorf("decode WhiteList JSON array: %w", err)
+	}
+
+	// Native outbound arrays always have tags. Use the full merger when they
+	// do; otherwise preserve unknown JSON array entries without trying to infer
+	// their semantics.
+	if jsonArrayHasTags(mainItems) && jsonArrayHasTags(whiteItems) {
+		mainRaw, err := json.Marshal(mainItems)
+		if err != nil {
+			return nil, err
+		}
+		whiteRaw, err := json.Marshal(whiteItems)
+		if err != nil {
+			return nil, err
+		}
+		mainDocument := map[string]json.RawMessage{"outbounds": mainRaw}
+		whiteDocument := map[string]json.RawMessage{"outbounds": whiteRaw}
+		if err := renameConflictingJSONTags(mainDocument, whiteDocument); err != nil {
+			return nil, err
+		}
+		return mergeNamedJSONArrays(mainDocument["outbounds"], whiteDocument["outbounds"])
+	}
+
+	merged := append([]json.RawMessage{}, mainItems...)
+	for _, whiteItem := range whiteItems {
+		found := false
+		for _, mainItem := range merged {
+			if jsonValuesEqual(mainItem, whiteItem) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged = append(merged, whiteItem)
+		}
+	}
+	return json.Marshal(merged)
+}
+
+func jsonArrayHasTags(items []json.RawMessage) bool {
+	for _, item := range items {
+		if _, err := jsonItemTag(item); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // JSON subscription formats use tags to connect selectors, outbounds and
