@@ -1,5 +1,7 @@
-# Production reverse proxy for a limiter running on the same host.
+# Production reverse proxy for the limiter server.
 # Replace LIMITER_PUBLIC_DOMAIN with a real DNS name pointing to this server.
+# This is the limiter-side proxy. The separate subscription-page proxy is
+# documented in README.md and PAIRED_WHITELIST.md.
 
 LIMITER_PUBLIC_DOMAIN {
 	encode zstd gzip

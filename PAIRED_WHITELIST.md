@@ -1,6 +1,6 @@
 # Режим Paired WhiteList
 
-Paired WhiteList — режим Remnawave Traffic Limiter для раздельного учёта основного и WhiteList-трафика. Он использует API Remnawave и не зависит от Bedolaga. Интеграция с Bedolaga описана отдельно в [BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md).
+Paired WhiteList — режим Remnawave Traffic Limiter для раздельного учёта основного и WhiteList-трафика. Он использует API Remnawave и не зависит от Bedolaga. Сначала разверните базовую двухсерверную схему по [DEPLOYMENT.md](DEPLOYMENT.md), затем при необходимости подключите Bedolaga по [BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md).
 
 ## Поведение по типу тарифа
 
@@ -17,37 +17,76 @@ Paired WhiteList — режим Remnawave Traffic Limiter для раздель�
 
 ## Шлюз подписок
 
-Шлюз работает по пути `/sub/<SHORT_UUID>`. Для активной пары он получает обычные подписки Main и WhiteList из `SUBSCRIPTION_UPSTREAM_URL`, объединяет их URI-списки и передаёт в `Subscription-Userinfo` счётчик технического WhiteList-пользователя.
+Шлюз работает по пути `/sub/<SHORT_UUID>`. Для активной пары он получает Main
+и WhiteList из `SUBSCRIPTION_UPSTREAM_URL`, объединяет их в формате клиента и
+передаёт в `Subscription-Userinfo` счётчик технического WhiteList-пользователя.
 
-Поддерживаются обычные URI-списки и Base64-кодированные URI-списки. Зашифрованные или непрозрачные форматы, например HAPP, Clash YAML и sing-box JSON, намеренно не объединяются: вместо повреждённой подписки сервис вернёт HTTP `501`.
+Поддерживаются URI/Base64, YAML форматов Mihomo/Clash/Stash и JSON форматов
+sing-box/Xray. Без суффикса формат определяет Remnawave по User-Agent. Его
+можно выбрать явно: `/mihomo`, `/clash`, `/stash`, `/singbox`, `/json` или
+`/v2ray-json` после `SHORT_UUID`. Конфликтующие одноимённые узлы и
+непрозрачные зашифрованные ответы не объединяются: вместо повреждённой
+конфигурации сервис вернёт HTTP `501`.
 
-Публичный домен подписок должен направлять клиентский путь в limiter. При внутреннем запросе к исходному сервису limiter добавляет заголовок `X-Remnawave-Limiter-Gateway: 1`. Обратный прокси обязан по этому заголовку пропустить запрос напрямую к исходному сервису, чтобы не возникла петля.
+Публичный домен подписок должен направлять клиентский путь в limiter по HTTPS,
+а не в открытый Docker-порт. При внутреннем запросе к исходному сервису limiter
+добавляет заголовок `X-Remnawave-Limiter-Gateway: 1`. Прокси пропускает его
+напрямую к исходной Subscription Page, чтобы не возникла петля. Этот маршрут
+обязательно ограничивается IP сервера limiter: внешнему клиенту нельзя давать
+возможность подделать служебный заголовок.
 
-Пример Caddy без привязки к конкретной сети:
+Пример полного блока Caddy на сервере Subscription Page:
 
 ```caddy
-@limiter_upstream header X-Remnawave-Limiter-Gateway 1
-handle @limiter_upstream {
-    reverse_proxy ORIGINAL_SUBSCRIPTION_SERVICE:PORT
-}
+SUBSCRIPTION_PUBLIC_DOMAIN {
+    encode zstd gzip
 
-@subscription path_regexp subscription ^/([A-Za-z0-9_-]+)$
-handle @subscription {
-    rewrite * /sub/{re.subscription.1}
-    reverse_proxy 127.0.0.1:8080
+    @limiter_upstream {
+        header X-Remnawave-Limiter-Gateway 1
+        remote_ip LIMITER_SERVER_PUBLIC_IP
+    }
+    handle @limiter_upstream {
+        reverse_proxy 127.0.0.1:3010 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    @subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?$
+    handle @subscription {
+        rewrite * /sub/{re.subscription.1}{re.subscription.2}
+        reverse_proxy https://LIMITER_PUBLIC_DOMAIN {
+            header_up Host LIMITER_PUBLIC_DOMAIN
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3010 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
 }
 ```
 
 В `.env` limiter укажите исходный публичный адрес подписок:
 
 ```env
-SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_DOMAIN
+SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_PUBLIC_DOMAIN
 ```
+
+Не обслуживайте `/assets/*` статическим Caddy `file_server`: Subscription Page
+выдаёт browser session-cookie, а `/assets/.app-config-v2.json` является
+динамическим маршрутом. Limiter сохраняет этот cookie только в HTML-ответе для
+браузера и не пересылает его при обновлении подписки VPN-клиентом.
 
 ## Пилотный запуск
 
 1. Создайте резервную копию Docker volume `remnawave_data` и зафиксируйте у тестового пользователя сквады, лимит и дату окончания.
-2. Убедитесь, что исходная подписка отдаёт URI-список или Base64-кодированный URI-список.
+2. Проверьте нужный формат в целевом клиенте: обычный URI/Base64, `/mihomo`,
+   `/clash`, `/stash`, `/singbox`, `/json` или `/v2ray-json`.
 3. В `.env` limiter установите:
 
    ```env
@@ -56,11 +95,11 @@ SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_DOMAIN
    PAIRED_WHITELIST_MANAGE_ALL=false
    LIMIT_NOTICE_SQUAD_UUID=UUID_СКВАДА_ПОСЛЕ_ЛИМИТА
    SUBSCRIPTION_GATEWAY_ENABLED=true
-   SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_DOMAIN
+   SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_PUBLIC_DOMAIN
    ```
 
 4. Пересоберите limiter, настройте прокси и выполните сверку тестового пользователя. Сервис создаст одну техническую учётную запись с тегом `WL_LIMITER`.
-5. Импортируйте исходную клиентскую ссылку в тестовое приложение. В ней должны быть Main и WhiteList-конфигурации, а отображаемый расход должен относиться к WhiteList-пакету.
+5. Импортируйте исходную клиентскую ссылку в тестовое приложение. В ней должны быть Main и WhiteList-конфигурации, а отображаемый расход должен относиться к WhiteList-пакету. Повторите проверку для каждого используемого семейства клиентов.
 6. Исчерпайте WhiteList-лимит и убедитесь, что технический пользователь получает сквад уведомления, а Main продолжает работать.
 
 Не включайте массовую обработку, пока пилот не завершён. Не удаляйте SQLite volume, пока существуют активные технические пользователи: в нём хранится их связь с основными аккаунтами.

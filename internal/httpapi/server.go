@@ -1,11 +1,9 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,12 +65,12 @@ type subscriptionResponse struct {
 }
 
 // handleSubscription is a capability URL gateway. It forwards ordinary
-// subscriptions unchanged and combines Base64/URI subscriptions only for a
-// recorded Main/WhiteList pair. It deliberately rejects opaque formats rather
-// than corrupting an encrypted or JSON subscription.
+// subscriptions unchanged and combines a recorded Main/WhiteList pair in the
+// format requested by the client: URI/Base64, Mihomo-family YAML, or JSON
+// (sing-box/Xray). Unsupported opaque bodies are rejected rather than altered.
 func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
-	shortUUID := strings.TrimPrefix(r.URL.Path, "/sub/")
-	if shortUUID == "" || strings.Contains(shortUUID, "/") {
+	shortUUID, clientType, ok := parseSubscriptionPath(r.URL.Path)
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
@@ -80,8 +79,8 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	browserRequest := acceptsHTML(r.Header)
-	mainResponse, err := fetchSubscription(s.cfg.SubscriptionUpstreamURL, main.ShortUUID, r.Header, browserRequest)
+	browserRequest := clientType == "" && acceptsHTML(r.Header)
+	mainResponse, err := fetchSubscription(s.cfg.SubscriptionUpstreamURL, main.ShortUUID, clientType, r.Header)
 	if err != nil {
 		http.Error(w, "subscription upstream unavailable", http.StatusBadGateway)
 		return
@@ -90,12 +89,15 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	// update. Preserve it exactly as the original service serves it. The paired
 	// config merger below is only for machine-readable subscription updates.
 	if browserRequest {
-		writeSubscription(w, mainResponse, "")
+		// The subscription-page frontend authenticates its subsequent
+		// /assets/* and runtime-config requests with this session cookie.
+		// Do not forward cookies for machine subscription updates below.
+		writeSubscription(w, mainResponse, "", true)
 		return
 	}
 	pair, err := s.store.GetPairByMainUserID(main.ID)
 	if err == sql.ErrNoRows {
-		writeSubscription(w, mainResponse, userSubscriptionInfo(main))
+		writeSubscription(w, mainResponse, userSubscriptionInfo(main), false)
 		return
 	}
 	if err != nil {
@@ -106,7 +108,7 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	// WhiteList-only tariffs.  Never merge Remnawave's human-readable
 	// "Subscription disabled" response into a client configuration.
 	if !pair.Enabled {
-		writeSubscription(w, mainResponse, userSubscriptionInfo(main))
+		writeSubscription(w, mainResponse, userSubscriptionInfo(main), false)
 		return
 	}
 	white, err := s.proc.Client.GetUserByID(pair.WhiteUserID)
@@ -115,15 +117,15 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.EqualFold(white.Status, "DISABLED") {
-		writeSubscription(w, mainResponse, userSubscriptionInfo(main))
+		writeSubscription(w, mainResponse, userSubscriptionInfo(main), false)
 		return
 	}
-	whiteResponse, err := fetchSubscription(s.cfg.SubscriptionUpstreamURL, pair.WhiteShortUUID, r.Header, false)
+	whiteResponse, err := fetchSubscription(s.cfg.SubscriptionUpstreamURL, pair.WhiteShortUUID, clientType, r.Header)
 	if err != nil {
 		http.Error(w, "WhiteList subscription unavailable", http.StatusBadGateway)
 		return
 	}
-	merged, err := mergeURILists(mainResponse.body, whiteResponse.body)
+	merged, err := mergeSubscriptions(mainResponse, whiteResponse)
 	if err != nil {
 		http.Error(w, "subscription format is not supported by the paired gateway", http.StatusNotImplemented)
 		return
@@ -133,28 +135,30 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		int64(white.UserTraffic.UsedTrafficBytes),
 		int64(white.TrafficLimitBytes),
 		white.ExpireAt,
-	))
+	), false)
 }
 
-func fetchSubscription(upstream, shortUUID string, incoming http.Header, browserRequest bool) (*subscriptionResponse, error) {
-	request, err := http.NewRequest(http.MethodGet, strings.TrimRight(upstream, "/")+"/"+shortUUID, nil)
+func fetchSubscription(upstream, shortUUID, clientType string, incoming http.Header) (*subscriptionResponse, error) {
+	target := strings.TrimRight(upstream, "/") + "/" + url.PathEscape(shortUUID)
+	if clientType != "" {
+		target += "/" + url.PathEscape(clientType)
+	}
+	request, err := http.NewRequest(http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
 	// Caddy can use this private routing marker to send gateway fetches to the
 	// original subscription service and prevent a public /sub route loop.
 	request.Header.Set("X-Remnawave-Limiter-Gateway", "1")
-	if browserRequest {
-		for _, key := range []string{"User-Agent", "Accept", "Accept-Language"} {
-			if value := incoming.Get(key); value != "" {
-				request.Header.Set(key, value)
-			}
+	// Remnawave selects a native subscription template by these headers. They
+	// are safe to forward and must be identical for Main and WhiteList so both
+	// responses use the same mergeable representation. Cookies and credentials
+	// are intentionally never copied to an upstream request.
+	for _, key := range []string{"User-Agent", "Accept", "Accept-Language"} {
+		if value := incoming.Get(key); value != "" {
+			request.Header.Set(key, value)
 		}
 	}
-	// Do not forward content-negotiation headers for machine updates. The
-	// subscription service can return client-specific opaque formats (HAPP,
-	// Clash YAML, etc.) for them, which cannot be safely combined. A neutral
-	// request yields the standard URI list understood by the gateway.
 	// Device-identification headers still reach the upstream so native
 	// HWID/device-limit validation remains effective.
 	for _, key := range []string{"X-HWID", "X-Device-OS", "X-Ver-OS", "X-Device-Model"} {
@@ -181,38 +185,6 @@ func acceptsHTML(headers http.Header) bool {
 	return strings.Contains(strings.ToLower(headers.Get("Accept")), "text/html")
 }
 
-func mergeURILists(main, white []byte) ([]byte, error) {
-	mainLines, err := subscriptionLines(main)
-	if err != nil {
-		return nil, err
-	}
-	whiteLines, err := subscriptionLines(white)
-	if err != nil {
-		return nil, err
-	}
-	return []byte(base64.StdEncoding.EncodeToString(append(append(mainLines, '\n'), whiteLines...))), nil
-}
-
-func subscriptionLines(body []byte) ([]byte, error) {
-	body = bytes.TrimSpace(body)
-	if bytes.Contains(body, []byte("://")) {
-		return body, nil
-	}
-	compact := bytes.Map(func(r rune) rune {
-		if r == '\r' || r == '\n' || r == ' ' || r == '\t' {
-			return -1
-		}
-		return r
-	}, body)
-	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		decoded, err := encoding.DecodeString(string(compact))
-		if err == nil && bytes.Contains(decoded, []byte("://")) {
-			return bytes.TrimSpace(decoded), nil
-		}
-	}
-	return nil, fmt.Errorf("not a Base64 or URI subscription")
-}
-
 func subscriptionUserInfo(used, total int64, expireAt string) string {
 	expire := int64(0)
 	if parsed, err := time.Parse(time.RFC3339, expireAt); err == nil {
@@ -237,13 +209,13 @@ func userSubscriptionInfo(user *engine.User) string {
 	return subscriptionUserInfo(int64(user.UsedTrafficBytes), int64(user.TrafficLimitBytes), user.ExpireAt)
 }
 
-func writeSubscription(w http.ResponseWriter, response *subscriptionResponse, userInfo string) {
+func writeSubscription(w http.ResponseWriter, response *subscriptionResponse, userInfo string, preserveBrowserCookies bool) {
 	// Preserve subscription metadata added by the upstream (custom profile
 	// headers, support URLs, update intervals, etc.).  Content-Length and
 	// validators describe the original Main-only body and must not be relayed
 	// after it is merged with the WhiteList response.
 	for key, values := range response.header {
-		if subscriptionHeaderMustBeRebuilt(key) {
+		if subscriptionHeaderMustBeRebuilt(key) && !(preserveBrowserCookies && strings.EqualFold(key, "set-cookie")) {
 			continue
 		}
 		for _, value := range values {

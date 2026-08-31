@@ -67,7 +67,7 @@ func TestWriteSubscriptionPreservesMetadataHeaders(t *testing.T) {
 		status: http.StatusOK,
 	}
 	recorder := httptest.NewRecorder()
-	writeSubscription(recorder, response, "download=42; total=100")
+	writeSubscription(recorder, response, "download=42; total=100", false)
 
 	if got := recorder.Header().Get("X-Custom-Subscription"); got != "kept" {
 		t.Fatalf("custom header = %q, want kept", got)
@@ -82,6 +82,22 @@ func TestWriteSubscriptionPreservesMetadataHeaders(t *testing.T) {
 		if got := recorder.Header().Get(forbidden); got != "" {
 			t.Fatalf("unexpected %s header: %q", forbidden, got)
 		}
+	}
+}
+
+func TestWriteSubscriptionPreservesCookieOnlyForBrowserPage(t *testing.T) {
+	response := &subscriptionResponse{
+		body: []byte("<html></html>"),
+		header: http.Header{
+			"Set-Cookie": {"session=browser-session; HttpOnly; Secure"},
+		},
+		status: http.StatusOK,
+	}
+	recorder := httptest.NewRecorder()
+	writeSubscription(recorder, response, "", true)
+
+	if got := recorder.Header().Get("Set-Cookie"); !strings.Contains(got, "session=browser-session") {
+		t.Fatalf("browser session cookie = %q, want preserved", got)
 	}
 }
 

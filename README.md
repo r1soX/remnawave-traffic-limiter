@@ -128,26 +128,102 @@ https://LIMITER_PUBLIC_DOMAIN/webhook
 
 Webhook обрабатывает изменения сразу. Фоновая сверка раз в `POLL_INTERVAL` (по умолчанию 45 секунд) восстанавливает состояние, если событие не дошло.
 
-## Настройка ссылки подписки
+## Подписки в схеме с двумя серверами
 
-В парном режиме публичная ссылка должна направляться в сервис по пути `/sub/{shortUuid}`. Он получает исходную подписку из `SUBSCRIPTION_UPSTREAM_URL`, объединяет Main и WhiteList-конфигурации и возвращает клиенту один ответ.
+Типичная production-схема состоит из двух серверов:
 
-Пример Caddy. Замените адреса на свои:
+- **сервер limiter** — Remnawave, limiter и его публичный HTTPS-домен;
+- **сервер подписок** — Bedolaga и исходная Remnawave Subscription Page.
+
+Клиент открывает обычную ссылку на домене страницы подписок. Caddy на сервере
+подписок передаёт запрос с `shortUuid` в limiter по HTTPS. Limiter получает
+исходные Main- и WhiteList-подписки через этот же домен, но добавляет служебный
+заголовок. Caddy распознаёт заголовок и направляет такой внутренний запрос
+напрямую в исходную Subscription Page — это исключает петлю прокси.
+
+В `.env` limiter укажите исходный публичный адрес страницы подписок:
+
+```env
+SUBSCRIPTION_GATEWAY_ENABLED=true
+SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_PUBLIC_DOMAIN
+```
+
+Ниже полный блок Caddy для **сервера подписок**. Замените только значения в
+верхнем регистре. Caddy сам добавляет `X-Forwarded-For` и
+`X-Forwarded-Host`; `X-Forwarded-Proto` задан явно, поскольку Subscription
+Page требует HTTPS за обратным прокси.
 
 ```caddy
-@limiter_upstream header X-Remnawave-Limiter-Gateway 1
-handle @limiter_upstream {
-    reverse_proxy 127.0.0.1:3010
-}
+SUBSCRIPTION_PUBLIC_DOMAIN {
+    encode zstd gzip
 
-@subscription path_regexp subscription ^/([A-Za-z0-9_-]+)$
-handle @subscription {
-    rewrite * /sub/{re.subscription.1}
-    reverse_proxy LIMITER_HOST:8080
+    # Запрос limiter к исходной Subscription Page. Ограничение remote_ip
+    # не позволяет внешнему клиенту подделать служебный заголовок.
+    @limiter_upstream {
+        header X-Remnawave-Limiter-Gateway 1
+        remote_ip LIMITER_SERVER_PUBLIC_IP
+    }
+    handle @limiter_upstream {
+        reverse_proxy 127.0.0.1:3010 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
+
+    # Обычная пользовательская ссылка идёт в limiter, а не в Docker-порт.
+    # Поддерживает обычную ссылку и явный формат Remnawave:
+    # /SHORT_UUID, /SHORT_UUID/mihomo, /SHORT_UUID/singbox и другие ниже.
+    @limiter_subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?$
+    handle @limiter_subscription {
+        rewrite * /sub/{re.subscription.1}{re.subscription.2}
+        reverse_proxy https://LIMITER_PUBLIC_DOMAIN {
+            header_up Host LIMITER_PUBLIC_DOMAIN
+        }
+    }
+
+    # HTML-страница, ассеты и динамический app-config обслуживаются
+    # исходной Subscription Page.
+    handle {
+        reverse_proxy 127.0.0.1:3010 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto https
+        }
+    }
 }
 ```
 
-Шлюз объединяет URI-списки и Base64-кодированные URI-списки. Непрозрачные форматы, такие как HAPP, Clash YAML или sing-box JSON, намеренно не объединяются: сервис вернёт `501`, а не повреждённую конфигурацию.
+Не добавляйте для `/assets/*` отдельный `file_server` и не копируйте ассеты
+Subscription Page в Caddy. Страница выдаёт session-cookie для браузера, а её
+`/assets/.app-config-v2.json` формируется динамически. Limiter сохраняет этот
+cookie только в HTML-ответе браузеру; в ответах для VPN-клиентов cookies не
+передаются.
+
+Минимальная проверка после настройки:
+
+```bash
+curl -sS -o /dev/null -w 'subscription: %{http_code}\n' \
+  https://SUBSCRIPTION_PUBLIC_DOMAIN/SHORT_UUID
+curl -sS -o /dev/null -w 'asset: %{http_code}\n' \
+  https://SUBSCRIPTION_PUBLIC_DOMAIN/assets/ASSET_NAME.js
+```
+
+Оба запроса должны вернуть `200`.
+
+Шлюз объединяет нативные форматы Remnawave:
+
+| Формат | Явная ссылка | Объединение |
+| --- | --- | --- |
+| URI / Base64 | `/SHORT_UUID` | URI-списки объединяются и отдаются в Base64. |
+| Mihomo / Clash / Stash | `/SHORT_UUID/mihomo`, `/clash`, `/stash` | Объединяются `proxies`, группы и их участники. |
+| sing-box / Xray JSON | `/SHORT_UUID/singbox`, `/json`, `/v2ray-json` | Объединяются `outbounds`/`endpoints` и состав селекторов. |
+
+Без суффикса Remnawave выбирает формат по User-Agent клиента, а limiter
+сохраняет этот выбор для обеих частей пары. Явный суффикс нужен, когда клиент
+не распознаётся корректно. Конфликтующие одноимённые узлы или непрозрачный
+зашифрованный формат безопасно возвращают `501`: сервис не выдаёт клиенту
+повреждённую конфигурацию.
 
 ## Пилот и запуск на всех пользователей
 
@@ -253,12 +329,36 @@ go build -o bin/remnawave-traffic-limiter ./cmd/server
 
 ## Дополнительная документация
 
+- [DEPLOYMENT.md](DEPLOYMENT.md) — полное production-развёртывание на двух серверах, Caddy, пилот и обновление.
 - [PAIRED_WHITELIST.md](PAIRED_WHITELIST.md) — детальная логика пар и смены тарифов.
 - [BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md) — интеграция Bedolaga.
+- [Caddyfile.production.example](Caddyfile.production.example) — безопасная публикация limiter.
+
+## Подготовка к публикации
+
+Перед тем как открыть репозиторий или передать его другой команде:
+
+1. Убедитесь, что в коммит не попали `.env`, дампы SQLite, Docker volumes,
+   логи и архивы с патчами.
+2. Оставьте только шаблон [.env.example](.env.example) с фиктивными значениями.
+3. Проверьте код и тесты:
+
+   ```bash
+   go test ./...
+   go vet ./...
+   git diff --check
+   git status --short
+   ```
+
+4. Проверьте, что в документации и Caddy-шаблонах нет реальных IP-адресов,
+   доменов, `shortUuid`, токенов и названий серверов.
+5. Перед публикацией release-версии заново пройдите пилот из раздела
+   «Пилот и запуск на всех пользователей».
 
 ## Безопасность
 
 - Не публикуйте `.env`, токены и секреты.
 - Используйте разные сильные секреты для webhook и Bedolaga control endpoint.
 - В production оставляйте `BIND_ADDRESS=127.0.0.1`; внешний доступ предоставляйте только через HTTPS reverse proxy. Шаблон Caddy публикует webhook, подписки и endpoint Bedolaga, но не диагностику.
+- Между сервером подписок и limiter используйте `https://LIMITER_PUBLIC_DOMAIN`, а не открытый Docker-порт. Служебный заголовок `X-Remnawave-Limiter-Gateway` принимайте только с IP сервера limiter.
 - Перед массовой миграцией резервируйте Docker volume и проверяйте все типы тарифов на тестовом пользователе.

@@ -1,6 +1,6 @@
 # Установка интеграции Bedolaga и Paired WhiteList
 
-Этот патч связывает Bedolaga с сервисом Remnawave Traffic Limiter. После его установки Bedolaga передаёт сервису актуальное состояние подписки, а сервис сам определяет, нужен ли технический WhiteList-пользователь.
+Этот патч связывает Bedolaga с сервисом Remnawave Traffic Limiter. После его установки Bedolaga передаёт сервису актуальное состояние подписки, а сервис сам определяет, нужен ли технический WhiteList-пользователь. До установки патча завершите базовое развёртывание limiter и Caddy по [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Что меняет патч
 
@@ -32,6 +32,11 @@ PAIRED_WHITELIST_SQUAD_UUID=UUID_WHITELIST
 # В точности совпадает с PAIRED_WHITELIST_CONTROL_TOKEN в .env limiter.
 PAIRED_WHITELIST_LIMITER_TOKEN=СЛУЧАЙНЫЙ_СЕКРЕТ_УПРАВЛЕНИЯ
 ```
+
+`PAIRED_WHITELIST_LIMITER_URL` — публичный HTTPS-домен limiter. Не указывайте
+в нём Docker-порт или внутренний адрес: бот может находиться на другом сервере.
+На публичном прокси limiter должны быть доступны только `/webhook`, `/sub/*` и
+`/api/pairing/*`; диагностические маршруты не публикуются.
 
 Пересоберите только контейнер бота. Состав compose-файлов зависит от вашей установки:
 
