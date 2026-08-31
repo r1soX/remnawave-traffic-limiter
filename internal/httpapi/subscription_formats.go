@@ -166,7 +166,8 @@ func subscriptionLines(body []byte) ([]byte, error) {
 
 // mergeYAMLSubscriptions supports the native layouts emitted by Mihomo,
 // Clash, and Stash templates. Server entries and group member lists are
-// joined; conflicting definitions with the same name are rejected.
+// joined. Conflicting technical proxy names are namespaced in the WhiteList
+// document, preserving both independently configured servers.
 func mergeYAMLSubscriptions(main, white []byte) ([]byte, error) {
 	mainDocument, err := decodeYAMLMapping(main)
 	if err != nil {
@@ -176,10 +177,81 @@ func mergeYAMLSubscriptions(main, white []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode WhiteList YAML: %w", err)
 	}
+	if err := renameConflictingYAMLProxies(mainDocument, whiteDocument); err != nil {
+		return nil, err
+	}
 	if err := mergeYAMLMapping(mainDocument, whiteDocument); err != nil {
 		return nil, err
 	}
 	return yaml.Marshal(mainDocument)
+}
+
+// Main and WhiteList can use the same server display name. Mihomo requires
+// proxy names to be unique, so prefix only conflicting technical proxies and
+// update all references in the WhiteList document before merging it.
+func renameConflictingYAMLProxies(main, white *yaml.Node) error {
+	mainProxies, mainOK := yamlMappingValue(main, "proxies")
+	whiteProxies, whiteOK := yamlMappingValue(white, "proxies")
+	if !mainOK || !whiteOK {
+		return nil
+	}
+	if mainProxies.Kind != yaml.SequenceNode || whiteProxies.Kind != yaml.SequenceNode {
+		return fmt.Errorf("YAML proxies must be sequences")
+	}
+	mainByName := make(map[string]*yaml.Node, len(mainProxies.Content))
+	usedNames := make(map[string]struct{}, len(mainProxies.Content)+len(whiteProxies.Content))
+	for _, proxy := range mainProxies.Content {
+		name, err := yamlItemName(proxy)
+		if err != nil {
+			return fmt.Errorf("Main proxy: %w", err)
+		}
+		mainByName[name] = proxy
+		usedNames[name] = struct{}{}
+	}
+	for _, proxy := range whiteProxies.Content {
+		name, err := yamlItemName(proxy)
+		if err != nil {
+			return fmt.Errorf("WhiteList proxy: %w", err)
+		}
+		usedNames[name] = struct{}{}
+	}
+	replacements := make(map[string]string)
+	for _, proxy := range whiteProxies.Content {
+		name, _ := yamlItemName(proxy)
+		mainProxy, collision := mainByName[name]
+		if !collision || yamlNodesEqual(mainProxy, proxy) {
+			continue
+		}
+		newName := uniqueTechnicalName("WL "+name, usedNames)
+		nameNode, _ := yamlMappingValue(proxy, "name")
+		nameNode.Value = newName
+		replacements[name] = newName
+		usedNames[newName] = struct{}{}
+	}
+	replaceYAMLReferences(white, replacements, "")
+	return nil
+}
+
+func replaceYAMLReferences(node *yaml.Node, replacements map[string]string, mappingKey string) {
+	if node == nil || len(replacements) == 0 {
+		return
+	}
+	switch node.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, child := range node.Content {
+			replaceYAMLReferences(child, replacements, mappingKey)
+		}
+	case yaml.MappingNode:
+		for index := 0; index < len(node.Content); index += 2 {
+			replaceYAMLReferences(node.Content[index+1], replacements, node.Content[index].Value)
+		}
+	case yaml.ScalarNode:
+		if mappingKey != "name" {
+			if replacement, found := replacements[node.Value]; found {
+				node.Value = replacement
+			}
+		}
+	}
 }
 
 func decodeYAMLMapping(body []byte) (*yaml.Node, error) {
@@ -380,8 +452,9 @@ func yamlNodesEqual(left, right *yaml.Node) bool {
 
 // mergeJSONSubscriptions handles sing-box and Xray JSON subscriptions. The
 // top-level outbound/endpoint lists are joined by tag. A selector with the
-// same tag receives the union of its member tags; all other conflicts fail
-// closed so that routing semantics cannot be silently changed.
+// same tag receives the union of its member tags. Conflicting technical tags
+// in the WhiteList document are namespaced so both independently configured
+// servers remain reachable.
 func mergeJSONSubscriptions(main, white []byte) ([]byte, error) {
 	mainDocument, err := decodeJSONObject(main)
 	if err != nil {
@@ -390,6 +463,9 @@ func mergeJSONSubscriptions(main, white []byte) ([]byte, error) {
 	whiteDocument, err := decodeJSONObject(white)
 	if err != nil {
 		return nil, fmt.Errorf("decode WhiteList JSON: %w", err)
+	}
+	if err := renameConflictingJSONTags(mainDocument, whiteDocument); err != nil {
+		return nil, err
 	}
 	for key, whiteValue := range whiteDocument {
 		mainValue, found := mainDocument[key]
@@ -411,6 +487,112 @@ func mergeJSONSubscriptions(main, white []byte) ([]byte, error) {
 		}
 	}
 	return json.Marshal(mainDocument)
+}
+
+// JSON subscription formats use tags to connect selectors, outbounds and
+// endpoints. A Main and WhiteList host with equal display names is still two
+// different credentials, therefore a conflicting WhiteList tag is namespaced
+// and every reference in its document is changed before the documents merge.
+func renameConflictingJSONTags(main, white map[string]json.RawMessage) error {
+	replacements := make(map[string]string)
+	usedTags := make(map[string]struct{})
+	for _, key := range []string{"outbounds", "endpoints"} {
+		mainItems, err := decodeJSONArray(main[key])
+		if err != nil {
+			return fmt.Errorf("decode Main %s: %w", key, err)
+		}
+		whiteItems, err := decodeJSONArray(white[key])
+		if err != nil {
+			return fmt.Errorf("decode WhiteList %s: %w", key, err)
+		}
+		mainByTag := make(map[string]json.RawMessage, len(mainItems))
+		for _, item := range mainItems {
+			tag, tagErr := jsonItemTag(item)
+			if tagErr != nil {
+				return fmt.Errorf("Main %s: %w", key, tagErr)
+			}
+			mainByTag[tag] = item
+			usedTags[tag] = struct{}{}
+		}
+		for _, item := range whiteItems {
+			tag, tagErr := jsonItemTag(item)
+			if tagErr != nil {
+				return fmt.Errorf("WhiteList %s: %w", key, tagErr)
+			}
+			usedTags[tag] = struct{}{}
+			if mainItem, collision := mainByTag[tag]; collision {
+				if _, mergeErr := mergeJSONObjectItem(mainItem, item); mergeErr != nil {
+					replacements[tag] = uniqueTechnicalName("WL "+tag, usedTags)
+					usedTags[replacements[tag]] = struct{}{}
+				}
+			}
+		}
+	}
+	if len(replacements) == 0 {
+		return nil
+	}
+	var document any
+	encoded, err := json.Marshal(white)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		return err
+	}
+	replaceJSONReferences(document, replacements)
+	updated, err := json.Marshal(document)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(updated, &white)
+}
+
+func decodeJSONArray(raw json.RawMessage) ([]json.RawMessage, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func replaceJSONReferences(value any, replacements map[string]string) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			if text, isText := item.(string); isText {
+				if replacement, found := replacements[text]; found {
+					typed[key] = replacement
+				}
+				continue
+			}
+			replaceJSONReferences(item, replacements)
+		}
+	case []any:
+		for index, item := range typed {
+			if text, isText := item.(string); isText {
+				if replacement, found := replacements[text]; found {
+					typed[index] = replacement
+				}
+				continue
+			}
+			replaceJSONReferences(item, replacements)
+		}
+	}
+}
+
+func uniqueTechnicalName(base string, used map[string]struct{}) string {
+	if _, exists := used[base]; !exists {
+		return base
+	}
+	for index := 2; ; index++ {
+		candidate := fmt.Sprintf("%s %d", base, index)
+		if _, exists := used[candidate]; !exists {
+			return candidate
+		}
+	}
 }
 
 func decodeJSONObject(body []byte) (map[string]json.RawMessage, error) {

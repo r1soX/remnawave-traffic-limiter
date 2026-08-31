@@ -162,12 +162,16 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
         reverse_proxy 127.0.0.1:3010 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
         }
     }
 
     # Обычная ссылка и все поддерживаемые явные форматы идут в limiter.
-    @limiter_subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?$
+    # Последняя часть совместима со ссылками некоторых ботов вида
+    # /SHORT_UUID&name=..., где параметры ошибочно добавлены без символа ?.
+    @limiter_subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?(&.*)?$
     handle @limiter_subscription {
         rewrite * /sub/{re.subscription.1}{re.subscription.2}
         reverse_proxy https://LIMITER_PUBLIC_DOMAIN {
@@ -181,6 +185,8 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
         reverse_proxy 127.0.0.1:3010 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
         }
     }

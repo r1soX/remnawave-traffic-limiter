@@ -49,11 +49,13 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
         reverse_proxy 127.0.0.1:3010 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
         }
     }
 
-    @subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?$
+    @subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?(&.*)?$
     handle @subscription {
         rewrite * /sub/{re.subscription.1}{re.subscription.2}
         reverse_proxy https://LIMITER_PUBLIC_DOMAIN {
@@ -65,6 +67,8 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
         reverse_proxy 127.0.0.1:3010 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
         }
     }

@@ -149,9 +149,8 @@ SUBSCRIPTION_UPSTREAM_URL=https://SUBSCRIPTION_PUBLIC_DOMAIN
 ```
 
 Ниже полный блок Caddy для **сервера подписок**. Замените только значения в
-верхнем регистре. Caddy сам добавляет `X-Forwarded-For` и
-`X-Forwarded-Host`; `X-Forwarded-Proto` задан явно, поскольку Subscription
-Page требует HTTPS за обратным прокси.
+верхнем регистре. Заголовки forwarded заданы явно, поскольку Subscription Page
+требует HTTPS и адрес клиента за обратным прокси.
 
 ```caddy
 SUBSCRIPTION_PUBLIC_DOMAIN {
@@ -167,6 +166,8 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
         reverse_proxy 127.0.0.1:3010 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
         }
     }
@@ -174,7 +175,9 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
     # Обычная пользовательская ссылка идёт в limiter, а не в Docker-порт.
     # Поддерживает обычную ссылку и явный формат Remnawave:
     # /SHORT_UUID, /SHORT_UUID/mihomo, /SHORT_UUID/singbox и другие ниже.
-    @limiter_subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?$
+    # Последняя часть совместима со ссылками некоторых ботов вида
+    # /SHORT_UUID&name=...; она отбрасывается и не влияет на подписку.
+    @limiter_subscription path_regexp subscription ^/([A-Za-z0-9_-]+)(/(json|v2ray-json|clash|singbox|mihomo|stash))?(&.*)?$
     handle @limiter_subscription {
         rewrite * /sub/{re.subscription.1}{re.subscription.2}
         reverse_proxy https://LIMITER_PUBLIC_DOMAIN {
@@ -188,6 +191,8 @@ SUBSCRIPTION_PUBLIC_DOMAIN {
         reverse_proxy 127.0.0.1:3010 {
             header_up Host {host}
             header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Host {host}
             header_up X-Forwarded-Proto https
         }
     }

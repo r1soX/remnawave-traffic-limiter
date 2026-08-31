@@ -127,6 +127,15 @@ func (s *Server) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	merged, err := mergeSubscriptions(mainResponse, whiteResponse)
 	if err != nil {
+		// Log only format metadata and the structural error. Subscription bodies
+		// contain user credentials and must never appear in logs.
+		slog.Warn(
+			"subscription merge rejected",
+			"main_user", main.ID,
+			"main_content_type", mainResponse.header.Get("Content-Type"),
+			"white_content_type", whiteResponse.header.Get("Content-Type"),
+			"error", err,
+		)
 		http.Error(w, "subscription format is not supported by the paired gateway", http.StatusNotImplemented)
 		return
 	}

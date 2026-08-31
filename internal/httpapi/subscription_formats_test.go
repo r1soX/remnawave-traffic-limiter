@@ -100,6 +100,50 @@ rules: [MATCH,Auto]
 	}
 }
 
+func TestMergeYAMLSubscriptionsRenamesConflictingProxy(t *testing.T) {
+	main := []byte(`
+proxies:
+  - name: NL
+    type: vless
+    server: main.example
+proxy-groups:
+  - name: Auto
+    type: select
+    proxies: [NL]
+`)
+	white := []byte(`
+proxies:
+  - name: NL
+    type: vless
+    server: whitelist.example
+proxy-groups:
+  - name: Auto
+    type: select
+    proxies: [NL]
+`)
+	merged, err := mergeYAMLSubscriptions(main, white)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	proxies := document["proxies"].([]any)
+	if len(proxies) != 2 {
+		t.Fatalf("proxies count = %d, want 2", len(proxies))
+	}
+	secondProxy := proxies[1].(map[string]any)
+	if got := secondProxy["name"]; got != "WL NL" {
+		t.Fatalf("technical proxy name = %#v, want WL NL", got)
+	}
+	group := document["proxy-groups"].([]any)[0].(map[string]any)
+	members := group["proxies"].([]any)
+	if got := strings.Join([]string{members[0].(string), members[1].(string)}, ","); got != "NL,WL NL" {
+		t.Fatalf("group members = %q, want NL,WL NL", got)
+	}
+}
+
 func TestMergeJSONSubscriptions(t *testing.T) {
 	main := []byte(`{
   "outbounds": [
@@ -151,10 +195,29 @@ func TestMergeSubscriptionsUsesResponseContentType(t *testing.T) {
 	}
 }
 
-func TestMergeJSONSubscriptionsRejectsConflictingNodeTag(t *testing.T) {
-	main := []byte(`{"outbounds":[{"tag":"same","type":"vless","server":"one"}]}`)
-	white := []byte(`{"outbounds":[{"tag":"same","type":"vless","server":"two"}]}`)
-	if _, err := mergeJSONSubscriptions(main, white); err == nil {
-		t.Fatal("expected conflicting tag to be rejected")
+func TestMergeJSONSubscriptionsRenamesConflictingNodeTag(t *testing.T) {
+	main := []byte(`{"outbounds":[{"tag":"Auto","type":"selector","outbounds":["same"]},{"tag":"same","type":"vless","server":"one"}]}`)
+	white := []byte(`{"outbounds":[{"tag":"Auto","type":"selector","outbounds":["same"]},{"tag":"same","type":"vless","server":"two"}]}`)
+	merged, err := mergeJSONSubscriptions(main, white)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Outbounds []struct {
+			Tag       string   `json:"tag"`
+			Outbounds []string `json:"outbounds"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Outbounds) != 3 {
+		t.Fatalf("outbounds count = %d, want 3", len(document.Outbounds))
+	}
+	if got := strings.Join(document.Outbounds[0].Outbounds, ","); got != "same,WL same" {
+		t.Fatalf("selector outbounds = %q, want same,WL same", got)
+	}
+	if got := document.Outbounds[2].Tag; got != "WL same" {
+		t.Fatalf("technical outbound tag = %q, want WL same", got)
 	}
 }
