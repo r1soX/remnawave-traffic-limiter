@@ -44,13 +44,23 @@ func TestFetchSubscriptionKeepsClientFormatSelection(t *testing.T) {
 		if got := r.Header.Get("X-Remnawave-Limiter-Gateway"); got != "1" {
 			t.Fatalf("gateway marker = %q", got)
 		}
+		if got := r.Header.Get("X-Client-Format"); got != "native-json" {
+			t.Fatalf("custom client header = %q", got)
+		}
+		if got := r.Header.Get("Cookie"); got != "" {
+			t.Fatalf("Cookie was forwarded: %q", got)
+		}
 		w.Header().Set("Content-Type", "application/x-yaml")
 		_, _ = io.WriteString(w, "proxies: []\nproxy-groups: []\n")
 	}))
 	defer upstream.Close()
 
 	response, err := fetchSubscription(upstream.URL, "user_01", "mihomo", http.Header{
-		"User-Agent": {"ClashMetaForAndroid"},
+		"User-Agent":       {"ClashMetaForAndroid"},
+		"X-Client-Format":  {"native-json"},
+		"Cookie":           {"session=private"},
+		"Accept-Encoding":  {"gzip"},
+		"X-Forwarded-Proto": {"http"},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -159,22 +159,13 @@ func fetchSubscription(upstream, shortUUID, clientType string, incoming http.Hea
 	// Caddy can use this private routing marker to send gateway fetches to the
 	// original subscription service and prevent a public /sub route loop.
 	request.Header.Set("X-Remnawave-Limiter-Gateway", "1")
-	// Remnawave selects a native subscription template by these headers. They
-	// are safe to forward and must be identical for Main and WhiteList so both
-	// responses use the same mergeable representation. Cookies and credentials
-	// are intentionally never copied to an upstream request.
-	for _, key := range []string{"User-Agent", "Accept", "Accept-Language"} {
-		if value := incoming.Get(key); value != "" {
-			request.Header.Set(key, value)
-		}
-	}
-	// Device-identification headers still reach the upstream so native
-	// HWID/device-limit validation remains effective.
-	for _, key := range []string{"X-HWID", "X-Device-OS", "X-Ver-OS", "X-Device-Model"} {
-		if value := incoming.Get(key); value != "" {
-			request.Header.Set(key, value)
-		}
-	}
+	// Remnawave and client templates may select a subscription representation
+	// using product-specific headers. Forward every end-to-end client header so
+	// Main and WhiteList receive the same request. Credentials, cookies,
+	// connection/proxy headers and compression negotiation are deliberately
+	// excluded: they are unsafe or would make the Go client return a compressed
+	// body to the merger.
+	copySubscriptionRequestHeaders(request.Header, incoming)
 	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
 	if err != nil {
 		return nil, err
@@ -188,6 +179,29 @@ func fetchSubscription(upstream, shortUUID, clientType string, incoming http.Hea
 		return nil, fmt.Errorf("upstream returned %s", response.Status)
 	}
 	return &subscriptionResponse{body: body, header: response.Header.Clone(), status: response.StatusCode}, nil
+}
+
+func copySubscriptionRequestHeaders(destination, source http.Header) {
+	for key, values := range source {
+		if subscriptionRequestHeaderExcluded(key) {
+			continue
+		}
+		for _, value := range values {
+			destination.Add(key, value)
+		}
+	}
+}
+
+func subscriptionRequestHeaderExcluded(key string) bool {
+	switch strings.ToLower(key) {
+	case "accept-encoding", "authorization", "connection", "content-length", "cookie",
+		"host", "keep-alive", "proxy-authenticate", "proxy-authorization", "te",
+		"trailer", "transfer-encoding", "upgrade", "x-forwarded-for", "x-forwarded-host",
+		"x-forwarded-proto", "x-real-ip", "x-remnawave-limiter-gateway":
+		return true
+	default:
+		return false
+	}
 }
 
 func acceptsHTML(headers http.Header) bool {
