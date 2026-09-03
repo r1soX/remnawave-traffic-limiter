@@ -228,6 +228,9 @@ PAIRED_WHITELIST_SQUAD_UUID=UUID_WHITELIST
 PAIRED_WHITELIST_LIMITER_TOKEN=THE_SAME_PAIRED_WHITELIST_CONTROL_TOKEN
 ```
 
+Bedolaga читает счётчик через защищённый `GET /api/pairing/*`, поэтому не
+получает и не хранит `DIAGNOSTICS_TOKEN`.
+
 Пересобирайте только сервис бота, используя compose-файлы своей установки.
 После каждого обновления Bedolaga заново запускайте скрипт применения патча:
 

@@ -33,6 +33,10 @@ PAIRED_WHITELIST_SQUAD_UUID=UUID_WHITELIST
 PAIRED_WHITELIST_LIMITER_TOKEN=СЛУЧАЙНЫЙ_СЕКРЕТ_УПРАВЛЕНИЯ
 ```
 
+`PAIRED_WHITELIST_LIMITER_TOKEN` применяется и для чтения счётчика в кабинете:
+бот обращается к `GET /api/pairing/<shortUuid>`. Поэтому отдельный
+`DIAGNOSTICS_TOKEN` в `.env` Bedolaga не нужен.
+
 `PAIRED_WHITELIST_LIMITER_URL` — публичный HTTPS-домен limiter. Не указывайте
 в нём Docker-порт или внутренний адрес: бот может находиться на другом сервере.
 На публичном прокси limiter должны быть доступны только `/webhook`, `/sub/*` и

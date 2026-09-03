@@ -45,13 +45,17 @@ logger = structlog.get_logger(__name__)
 
 async def get_paired_state(short_uuid: str | None) -> dict[str, Any] | None:
     base_url = os.getenv("PAIRED_WHITELIST_LIMITER_URL", "").rstrip("/")
-    if not base_url or not short_uuid:
+    token = os.getenv("PAIRED_WHITELIST_LIMITER_TOKEN", "")
+    if not base_url or not short_uuid or not token:
         return None
 
     def fetch() -> dict[str, Any]:
         request = Request(
-            f"{base_url}/api/state/{quote(short_uuid, safe='')}",
-            headers={"Accept": "application/json"},
+            f"{base_url}/api/pairing/{quote(short_uuid, safe='')}",
+            headers={
+                "Accept": "application/json",
+                "X-Paired-Whitelist-Token": token,
+            },
         )
         with urlopen(request, timeout=3) as response:
             return json.loads(response.read().decode())
@@ -86,13 +90,14 @@ def paired_white_user_id(state: dict[str, Any] | None) -> int | None:
 
 async def reconcile_pair(short_uuid: str | None) -> bool:
     base_url = os.getenv("PAIRED_WHITELIST_LIMITER_URL", "").rstrip("/")
-    if not base_url or not short_uuid:
+    token = os.getenv("PAIRED_WHITELIST_LIMITER_TOKEN", "")
+    if not base_url or not short_uuid or not token:
         return False
 
     def reconcile() -> None:
         request = Request(
-            f"{base_url}/api/reconcile/{quote(short_uuid, safe='')}",
-            method="POST",
+            f"{base_url}/api/pairing/{quote(short_uuid, safe='')}",
+            headers={"X-Paired-Whitelist-Token": token},
         )
         with urlopen(request, timeout=10):
             pass
@@ -213,6 +218,32 @@ async def sync_tariff_pairing(
 
 
 def patch_traffic(source: str) -> str:
+    old_state_fetch = """    base_url = os.getenv('PAIRED_WHITELIST_LIMITER_URL', '').rstrip('/')
+    if not base_url or not short_uuid:
+        return None
+
+    url = f'{base_url}/api/state/{quote(short_uuid, safe="")}'
+
+    def fetch() -> dict[str, Any]:
+        request = Request(url, headers={'Accept': 'application/json'})
+"""
+    new_state_fetch = """    base_url = os.getenv('PAIRED_WHITELIST_LIMITER_URL', '').rstrip('/')
+    token = os.getenv('PAIRED_WHITELIST_LIMITER_TOKEN', '')
+    if not base_url or not short_uuid or not token:
+        return None
+
+    url = f'{base_url}/api/pairing/{quote(short_uuid, safe="")}'
+
+    def fetch() -> dict[str, Any]:
+        request = Request(url, headers={
+            'Accept': 'application/json',
+            'X-Paired-Whitelist-Token': token,
+        })
+"""
+    # Upgrade installations that already received the former display patch.
+    # /api/state is intentionally hidden from the public proxy, whereas the
+    # authenticated pairing route is the bot's existing control channel.
+    source = source.replace(old_state_fetch, new_state_fetch, 1)
     display_only = """        paired_traffic = await _paired_limiter_traffic(panel_short_uuid)
         if paired_traffic:
             traffic_stats = {**(traffic_stats or {}), **paired_traffic}

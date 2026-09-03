@@ -61,13 +61,17 @@ router = APIRouter()
 
 async def _paired_limiter_traffic(short_uuid: str | None) -> dict[str, Any] | None:
     base_url = os.getenv('PAIRED_WHITELIST_LIMITER_URL', '').rstrip('/')
-    if not base_url or not short_uuid:
+    token = os.getenv('PAIRED_WHITELIST_LIMITER_TOKEN', '')
+    if not base_url or not short_uuid or not token:
         return None
 
-    url = f'{base_url}/api/state/{quote(short_uuid, safe="")}'
+    url = f'{base_url}/api/pairing/{quote(short_uuid, safe="")}'
 
     def fetch() -> dict[str, Any]:
-        request = Request(url, headers={'Accept': 'application/json'})
+        request = Request(url, headers={
+            'Accept': 'application/json',
+            'X-Paired-Whitelist-Token': token,
+        })
         with urlopen(request, timeout=3) as response:
             return json.loads(response.read().decode())
 

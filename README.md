@@ -265,6 +265,9 @@ PAIRED_WHITELIST_SQUAD_UUID=UUID_WHITELIST
 PAIRED_WHITELIST_LIMITER_TOKEN=ТОТ_ЖЕ_PAIRED_WHITELIST_CONTROL_TOKEN
 ```
 
+Тот же control token используется для безопасного чтения счётчика пары через
+опубликованный маршрут `/api/pairing/*`; `DIAGNOSTICS_TOKEN` в Bedolaga не нужен.
+
 Подробная установка и повторное применение после `git pull`: [BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md).
 
 ## API и диагностика

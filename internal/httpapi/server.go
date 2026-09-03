@@ -471,6 +471,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.writeUserState(w, user)
+}
+
+func (s *Server) writeUserState(w http.ResponseWriter, user *engine.User) {
 	localState := state.StateActive
 	if record, err := s.store.GetUserState(user.ShortUUID); err == nil && record.WhitelistState != "" {
 		localState = record.WhitelistState
@@ -558,8 +562,8 @@ func (s *Server) allowDiagnosticRequest(remoteAddr string) bool {
 // a tariff transition. It makes the transition immediate and retains the
 // technical account on downgrade so a later LTE upgrade reuses it.
 func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -614,6 +618,14 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "user is not in paired WhiteList allowlist"})
+		return
+	}
+	// The Bedolaga cabinet needs the paired counter, but /api/state is an
+	// administrator-only route and deliberately not published through Caddy.
+	// Reuse the already authenticated pairing route instead of exposing a
+	// diagnostics endpoint or adding a second secret to the bot.
+	if r.Method == http.MethodGet {
+		s.writeUserState(w, user)
 		return
 	}
 	lockKey := "user-id:" + strconv.FormatInt(user.ID, 10)
