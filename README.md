@@ -268,7 +268,9 @@ PAIRED_WHITELIST_LIMITER_TOKEN=ТОТ_ЖЕ_PAIRED_WHITELIST_CONTROL_TOKEN
 Тот же control token используется для безопасного чтения счётчика пары через
 опубликованный маршрут `/api/pairing/*`; `DIAGNOSTICS_TOKEN` в Bedolaga не нужен.
 
-Подробная установка и повторное применение после `git pull`: [BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md).
+Текущий патч проверен с Bedolaga **v4.8.0** (`1fe2b47`). Подробная установка,
+проверка совместимости и повторное применение после `git pull`:
+[BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md).
 
 ## API и диагностика
 
@@ -279,7 +281,8 @@ PAIRED_WHITELIST_LIMITER_TOKEN=ТОТ_ЖЕ_PAIRED_WHITELIST_CONTROL_TOKEN
 | `POST` | `/webhook` | Приём webhook Remnawave. |
 | `GET` | `/api/state/{shortUuid}` | Состояние и счётчик пользователя. Для пары — WhiteList-счётчик. |
 | `POST` | `/api/reconcile/{shortUuid}` | Сверка одного пользователя. |
-| `POST` | `/api/pairing/{shortUuid}` | Защищённый endpoint для Bedolaga. |
+| `GET` | `/api/pairing/{shortUuid}` | Защищённое чтение состояния пары и WhiteList-счётчика для Bedolaga. |
+| `POST` | `/api/pairing/{shortUuid}` | Применение полного целевого состояния тарифа из Bedolaga. |
 | `GET` | `/sub/{shortUuid}` | Объединённая подписка, если шлюз включён. |
 
 Примеры:

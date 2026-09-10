@@ -326,6 +326,59 @@ def patch_traffic(source: str) -> str:
 
 
 def patch_auth(source: str) -> str:
+    panel_sync_old = """                snapshot = read_panel_user(panel_user)
+                current_time = datetime.now(UTC)
+                expire_at = snapshot.expire_at or current_time
+                connected_squads = list(snapshot.squads)
+                traffic_limit_gb = snapshot.traffic_limit_gb or 0
+                traffic_used_gb = snapshot.traffic_used_gb or 0
+                device_limit = coerce_panel_device_limit(panel_user.hwid_device_limit, default=0)
+"""
+    panel_sync_new = """                snapshot = read_panel_user(panel_user)
+                current_time = datetime.now(UTC)
+                expire_at = snapshot.expire_at or current_time
+                connected_squads = list(snapshot.squads)
+                traffic_limit_gb = snapshot.traffic_limit_gb or 0
+                traffic_used_gb = snapshot.traffic_used_gb or 0
+
+                from dataclasses import replace as dataclass_replace
+
+                from app.services.paired_whitelist_limiter import get_paired_state, paired_traffic
+
+                virtual_traffic = paired_traffic(await get_paired_state(panel_user.short_uuid))
+                projection_snapshot = snapshot
+                if virtual_traffic:
+                    traffic_limit_gb = int(virtual_traffic['limit_gb'])
+                    traffic_used_gb = float(virtual_traffic['used_gb'])
+                    # Main is deliberately unlimited while the companion owns
+                    # the finite counter.  Do not persist that technical Main
+                    # state over Bedolaga's tariff fields during email import.
+                    projection_snapshot = dataclass_replace(
+                        snapshot,
+                        traffic_limit_gb=None,
+                        traffic_used_gb=None,
+                    )
+
+                device_limit = coerce_panel_device_limit(panel_user.hwid_device_limit, default=0)
+"""
+    if panel_sync_new in source:
+        return source
+    if panel_sync_old in source:
+        source = once(source, panel_sync_old, panel_sync_new, "auth.py panel_sync pairing overlay")
+        source = once(
+            source,
+            """                    project_onto_subscription(
+                        existing_sub,
+                        snapshot,
+""",
+            """                    project_onto_subscription(
+                        existing_sub,
+                        projection_snapshot,
+""",
+            "auth.py panel_sync persistence guard",
+        )
+        return source
+
     old = """                # Parse panel data
                 expire_at = panel_datetime_to_utc(panel_user.expire_at)
                 traffic_limit_gb = (
@@ -541,6 +594,33 @@ def patch_subscription_service(source: str) -> str:
     if previous_call in source:
         source = source.replace(previous_call, full_call, 1)
     if desired not in source:
+        panel_sync_current = """                subscription.subscription_url = updated_user.subscription_url
+                subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                await link_subscription_panel_identity(db, subscription, remnawave_id)
+                await db.commit()
+
+                status_text = 'активным' if is_actually_active else 'истёкшим'
+"""
+        panel_sync_desired = """                subscription.subscription_url = updated_user.subscription_url
+                subscription.subscription_crypto_link = updated_user.happ_crypto_link
+                await link_subscription_panel_identity(db, subscription, remnawave_id)
+                await db.commit()
+
+                from app.services.paired_whitelist_limiter import reset_is_new_billing_period, sync_tariff_pairing
+
+                await sync_tariff_pairing(
+                    subscription.remnawave_short_uuid,
+                    subscription,
+                    reset_white_traffic=reset_is_new_billing_period(reset_traffic, reset_reason),
+                    traffic_limit_strategy=get_traffic_reset_strategy(subscription.tariff),
+                )
+
+                status_text = 'активным' if is_actually_active else 'истёкшим'
+"""
+        if panel_sync_current in source:
+            source = source.replace(panel_sync_current, panel_sync_desired, 1)
+
+    if desired not in source and panel_sync_desired not in source:
         old = """                subscription.subscription_url = updated_user.subscription_url
                 subscription.subscription_crypto_link = updated_user.happ_crypto_link
                 await db.commit()
@@ -565,7 +645,7 @@ def main() -> None:
         if not path.is_file():
             die("run from ~/remnawave-bedolaga-telegram-bot")
 
-    original = {path: path.read_text() for path in (TRAFFIC, AUTH, SUBS)}
+    original = {path: path.read_text(encoding="utf-8") for path in (TRAFFIC, AUTH, SUBS)}
     patched = {
         TRAFFIC: patch_traffic(original[TRAFFIC]),
         AUTH: patch_auth(original[AUTH]),
@@ -575,10 +655,10 @@ def main() -> None:
     for path, text in original.items():
         backup = Path(f"{path}.before-paired-write-routing")
         if not backup.exists():
-            backup.write_text(text)
-    HELPER.write_text(HELPER_SOURCE)
+            backup.write_text(text, encoding="utf-8")
+    HELPER.write_text(HELPER_SOURCE, encoding="utf-8")
     for path, text in patched.items():
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     print("Paired WhiteList write/display routing patch applied.")
 
 

@@ -23,7 +23,7 @@ def main() -> None:
     if not PATH.is_file():
         fail("run from ~/remnawave-bedolaga-telegram-bot")
 
-    text = PATH.read_text()
+    text = PATH.read_text(encoding="utf-8")
     if "user_event_lock = asyncio.Lock()" in text:
         print("Webhook serialization patch is already applied.")
         return
@@ -78,7 +78,7 @@ def main() -> None:
         1,
     )
     shutil.copy2(PATH, PATH.with_suffix(".py.before-webhook-serialization"))
-    PATH.write_text(patched)
+    PATH.write_text(patched, encoding="utf-8")
     print("Webhook serialization patch applied.")
 
 

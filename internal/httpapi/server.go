@@ -589,24 +589,6 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "user identifier required"})
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	var request struct {
-		Enabled              *bool     `json:"enabled"`
-		TrafficLimitBytes    *int64    `json:"trafficLimitBytes"`
-		TrafficLimitStrategy *string   `json:"trafficLimitStrategy"`
-		ExpireAt             *string   `json:"expireAt"`
-		Status               *string   `json:"status"`
-		ActiveInternalSquads *[]string `json:"activeInternalSquads"`
-		ResetWhiteTraffic    bool      `json:"resetWhiteTraffic"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Enabled == nil ||
-		request.TrafficLimitBytes == nil || request.TrafficLimitStrategy == nil || request.ExpireAt == nil ||
-		request.Status == nil || request.ActiveInternalSquads == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "full tariff target is required"})
-		return
-	}
 	user, err := s.proc.ResolveUser(identifier)
 	if err != nil || user == nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -626,6 +608,27 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	// diagnostics endpoint or adding a second secret to the bot.
 	if r.Method == http.MethodGet {
 		s.writeUserState(w, user)
+		return
+	}
+
+	// Only POST carries a full desired-state document. GET intentionally has no
+	// body and is used by the Bedolaga cabinet to read the paired traffic meter.
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	var request struct {
+		Enabled              *bool     `json:"enabled"`
+		TrafficLimitBytes    *int64    `json:"trafficLimitBytes"`
+		TrafficLimitStrategy *string   `json:"trafficLimitStrategy"`
+		ExpireAt             *string   `json:"expireAt"`
+		Status               *string   `json:"status"`
+		ActiveInternalSquads *[]string `json:"activeInternalSquads"`
+		ResetWhiteTraffic    bool      `json:"resetWhiteTraffic"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Enabled == nil ||
+		request.TrafficLimitBytes == nil || request.TrafficLimitStrategy == nil || request.ExpireAt == nil ||
+		request.Status == nil || request.ActiveInternalSquads == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "full tariff target is required"})
 		return
 	}
 	lockKey := "user-id:" + strconv.FormatInt(user.ID, 10)

@@ -22,8 +22,8 @@ def main() -> None:
     if not SERVICE_PATH.is_file() or not TRAFFIC_PATH.is_file():
         fail("run this script from ~/remnawave-bedolaga-telegram-bot")
 
-    service_source = SERVICE_PATH.read_text()
-    traffic_source = TRAFFIC_PATH.read_text()
+    service_source = SERVICE_PATH.read_text(encoding="utf-8")
+    traffic_source = TRAFFIC_PATH.read_text(encoding="utf-8")
 
     service_needle = """                    'subscription_url': user.subscription_url,
                 }"""
@@ -136,10 +136,13 @@ router = APIRouter()
     new_traffic_source = new_traffic_source.replace(limit_needle, limit_replacement, 1)
 
     for path in (SERVICE_PATH, TRAFFIC_PATH):
-        Path(f"{path}.before-paired-display").write_text(path.read_text())
+        Path(f"{path}.before-paired-display").write_text(
+            path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
-    SERVICE_PATH.write_text(new_service_source)
-    TRAFFIC_PATH.write_text(new_traffic_source)
+    SERVICE_PATH.write_text(new_service_source, encoding="utf-8")
+    TRAFFIC_PATH.write_text(new_traffic_source, encoding="utf-8")
     print("Paired WhiteList display patch applied successfully.")
 
 
