@@ -449,7 +449,9 @@ def patch_subscription_service(source: str) -> str:
         "from app.services.paired_whitelist_limiter import "
         "reset_is_new_billing_period, sync_tariff_pairing"
     )
-    prefix = prefix.replace(helper_import_old, helper_import_new)
+    # The create flow only needs sync_tariff_pairing. Keep its import narrow on
+    # repeated runs; reset_is_new_billing_period belongs to the update flow.
+    prefix = prefix.replace(helper_import_new, helper_import_old)
     source = source.replace(helper_import_old, helper_import_new)
 
     old = """                subscription.remnawave_short_uuid = updated_user.short_uuid
@@ -458,7 +460,7 @@ def patch_subscription_service(source: str) -> str:
                 if await self._panel_id_is_free_for(db, subscription, updated_user.id):
 """
     new = """                subscription.remnawave_short_uuid = updated_user.short_uuid
-                from app.services.paired_whitelist_limiter import reset_is_new_billing_period, sync_tariff_pairing
+                from app.services.paired_whitelist_limiter import sync_tariff_pairing
 
                 await sync_tariff_pairing(
                     updated_user.short_uuid,

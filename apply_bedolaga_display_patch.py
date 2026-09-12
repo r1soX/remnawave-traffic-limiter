@@ -25,6 +25,16 @@ def main() -> None:
     service_source = SERVICE_PATH.read_text(encoding="utf-8")
     traffic_source = TRAFFIC_PATH.read_text(encoding="utf-8")
 
+    already_applied = (
+        service_source.count("'short_uuid': user.short_uuid,") >= 2
+        and "async def _paired_limiter_traffic(" in traffic_source
+        and "paired_traffic = await _paired_limiter_traffic(panel_short_uuid)" in traffic_source
+        and "limit_gb = traffic_stats.get('traffic_limit_gb'" in traffic_source
+    )
+    if already_applied:
+        print("Paired WhiteList display patch is already applied.")
+        return
+
     service_needle = """                    'subscription_url': user.subscription_url,
                 }"""
     if service_source.count(service_needle) != 2:

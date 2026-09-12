@@ -268,7 +268,7 @@ PAIRED_WHITELIST_LIMITER_TOKEN=ТОТ_ЖЕ_PAIRED_WHITELIST_CONTROL_TOKEN
 Тот же control token используется для безопасного чтения счётчика пары через
 опубликованный маршрут `/api/pairing/*`; `DIAGNOSTICS_TOKEN` в Bedolaga не нужен.
 
-Текущий патч проверен с Bedolaga **v4.8.0** (`1fe2b47`). Подробная установка,
+Текущий патч проверен с Bedolaga **v4.10.0** (`9fcebfd`). Подробная установка,
 проверка совместимости и повторное применение после `git pull`:
 [BEDOLAGA_PATCH_INSTALL.md](BEDOLAGA_PATCH_INSTALL.md).
 
