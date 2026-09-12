@@ -9,10 +9,8 @@ import sys
 
 ROOT = Path.cwd()
 TRAFFIC = ROOT / "app/cabinet/routes/subscription_modules/traffic.py"
-STATUS = ROOT / "app/cabinet/routes/subscription_modules/status.py"
 AUTH = ROOT / "app/cabinet/routes/auth.py"
 SUBS = ROOT / "app/services/subscription_service.py"
-PROJECTION = ROOT / "app/services/panel_sync/projection.py"
 HELPER = ROOT / "app/services/paired_whitelist_limiter.py"
 
 
@@ -112,8 +110,13 @@ async def reconcile_pair(short_uuid: str | None) -> bool:
         return False
 
 
-def paired_tariff_for_subscription(subscription: Any) -> bool | None:
-    """Return whether the logical tariff contains both Main and WhiteList."""
+def paired_mode_for_subscription(subscription: Any) -> bool | None:
+    """Pair only finite tariffs that contain both Main and WhiteList.
+
+    A WhiteList-only tariff is a normal single Remnawave user: its own native
+    counter must account for WhiteList traffic, so creating a Main companion
+    would be both unnecessary and wrong.
+    """
     whitelist_uuid = os.getenv("PAIRED_WHITELIST_SQUAD_UUID", "").strip()
     if not whitelist_uuid:
         return None
@@ -123,29 +126,7 @@ def paired_tariff_for_subscription(subscription: Any) -> bool | None:
         squads = getattr(subscription, "connected_squads", None) or []
     normalized = {str(squad).strip() for squad in squads if str(squad).strip()}
     has_main = any(squad != whitelist_uuid for squad in normalized)
-    return whitelist_uuid in normalized and has_main
-
-
-def target_traffic_limit_gb(subscription: Any) -> int:
-    """Return the logical quota, falling back to the tariff after a bad panel pull."""
-    local_limit = int(getattr(subscription, "traffic_limit_gb", 0) or 0)
-    if local_limit > 0:
-        return local_limit
-    tariff = getattr(subscription, "tariff", None)
-    return int(getattr(tariff, "traffic_limit_gb", 0) or 0)
-
-
-def paired_mode_for_subscription(subscription: Any) -> bool | None:
-    """Pair only finite tariffs that contain both Main and WhiteList.
-
-    A WhiteList-only tariff is a normal single Remnawave user: its own native
-    counter must account for WhiteList traffic, so creating a Main companion
-    would be both unnecessary and wrong.
-    """
-    paired_tariff = paired_tariff_for_subscription(subscription)
-    if paired_tariff is None:
-        return None
-    return paired_tariff and target_traffic_limit_gb(subscription) > 0
+    return bool(getattr(subscription, "traffic_limit_gb", 0) or 0) and whitelist_uuid in normalized and has_main
 
 
 def _target_squads(subscription: Any) -> list[str]:
@@ -183,16 +164,8 @@ async def sync_tariff_pairing(
             logger.warning("Paired WhiteList control is not configured", short_uuid=short_uuid)
         return False
 
-    limit_gb = target_traffic_limit_gb(subscription)
-    # Bedolaga v4.10.0 may already have imported Main's technical zero before
-    # this patch was installed. Recover the exact companion quota (including
-    # top-ups) when the tariff itself still says that pairing is required.
-    if desired and int(getattr(subscription, "traffic_limit_gb", 0) or 0) == 0:
-        virtual_traffic = paired_traffic(await get_paired_state(short_uuid))
-        if virtual_traffic and int(virtual_traffic["limit_bytes"]) > 0:
-            limit_gb = int(virtual_traffic["limit_gb"])
-
     def send() -> None:
+        limit_gb = int(getattr(subscription, "traffic_limit_gb", 0) or 0)
         end_date = getattr(subscription, "end_date", None)
         if end_date is None:
             raise ValueError("subscription end_date is required")
@@ -234,7 +207,7 @@ async def sync_tariff_pairing(
             "Applied paired WhiteList tariff target",
             short_uuid=short_uuid,
             paired=desired,
-            traffic_limit_gb=limit_gb,
+            traffic_limit_gb=int(getattr(subscription, "traffic_limit_gb", 0) or 0),
             tariff_id=getattr(subscription, "tariff_id", None),
         )
         return True
@@ -466,112 +439,6 @@ def patch_auth(source: str) -> str:
     return source
 
 
-def patch_projection(source: str) -> str:
-    marker = "Paired Main's zero is an implementation detail"
-    if marker in source:
-        return source
-
-    old = """    moment = now or datetime.now(UTC)
-    changed: set[str] = set()
-
-    if snapshot_taken_at is not None:
-"""
-    new = """    moment = now or datetime.now(UTC)
-    changed: set[str] = set()
-
-    from app.services.paired_whitelist_limiter import paired_mode_for_subscription
-
-    if paired_mode_for_subscription(subscription) is True and snapshot.traffic_limit_gb == 0:
-        # Paired Main's zero is an implementation detail: the companion owns
-        # the real counter and Main carries only its non-WhiteList squads.
-        # Bedolaga v4.10 treats the panel as authoritative, so mask these three
-        # technical fields before every shared panel -> bot projection.
-        snapshot = replace(
-            snapshot,
-            traffic_limit_gb=None,
-            traffic_used_gb=None,
-            squads=(),
-        )
-
-    if snapshot_taken_at is not None:
-"""
-    return once(source, old, new, "panel projection paired Main guard")
-
-
-def patch_status(source: str) -> str:
-    marker = "The first cabinet response must use the companion counter"
-    if marker in source:
-        return source
-
-    old = """    subscription_data = _subscription_to_response(
-        subscription, servers, tariff_name, traffic_purchases_data, user=fresh_user
-    )
-    return SubscriptionStatusResponse(has_subscription=True, subscription=subscription_data)
-"""
-    new = """    subscription_data = _subscription_to_response(
-        subscription, servers, tariff_name, traffic_purchases_data, user=fresh_user
-    )
-
-    from app.services.paired_whitelist_limiter import (
-        get_paired_state,
-        paired_mode_for_subscription,
-        paired_traffic,
-    )
-
-    # The first cabinet response must use the companion counter. Waiting for
-    # POST /refresh-traffic leaves the page showing Main's technical unlimited
-    # value until the user presses refresh.
-    virtual_traffic = paired_traffic(
-        await get_paired_state(getattr(subscription, 'remnawave_short_uuid', None))
-    )
-    if virtual_traffic:
-        virtual_limit_gb = int(virtual_traffic['limit_gb'])
-        virtual_used_gb = float(virtual_traffic['used_gb'])
-        virtual_percent = (
-            min(100.0, (virtual_used_gb / virtual_limit_gb) * 100) if virtual_limit_gb > 0 else 0.0
-        )
-        subscription_data = subscription_data.model_copy(
-            update={
-                'traffic_limit_gb': virtual_limit_gb,
-                'traffic_used_gb': round(virtual_used_gb, 2),
-                'traffic_used_percent': round(virtual_percent, 1),
-            }
-        )
-
-        # Repair only the v4.10 corruption signature: DB says unlimited while
-        # the current tariff is finite and paired. Never persist an old quota
-        # over a legitimate unlimited tariff or a finite-to-finite switch.
-        tariff_limit_gb = int(getattr(getattr(subscription, 'tariff', None), 'traffic_limit_gb', 0) or 0)
-        if (
-            int(getattr(subscription, 'traffic_limit_gb', 0) or 0) == 0
-            and tariff_limit_gb > 0
-            and paired_mode_for_subscription(subscription) is True
-        ):
-            subscription.traffic_limit_gb = virtual_limit_gb
-            subscription.traffic_used_gb = virtual_used_gb
-            subscription.updated_at = now
-            await db.commit()
-    elif paired_mode_for_subscription(subscription) is True:
-        # Limiter is temporarily unavailable: the finite tariff is still a
-        # safer display fallback than Main's synthetic unlimited value.
-        fallback_limit_gb = int(getattr(subscription.tariff, 'traffic_limit_gb', 0) or 0)
-        fallback_used_gb = float(getattr(subscription, 'traffic_used_gb', 0) or 0)
-        fallback_percent = (
-            min(100.0, (fallback_used_gb / fallback_limit_gb) * 100) if fallback_limit_gb > 0 else 0.0
-        )
-        subscription_data = subscription_data.model_copy(
-            update={
-                'traffic_limit_gb': fallback_limit_gb,
-                'traffic_used_gb': round(fallback_used_gb, 2),
-                'traffic_used_percent': round(fallback_percent, 1),
-            }
-        )
-
-    return SubscriptionStatusResponse(has_subscription=True, subscription=subscription_data)
-"""
-    return once(source, old, new, "cabinet initial paired traffic overlay")
-
-
 def patch_subscription_service(source: str) -> str:
     method_start = source.find("    async def update_remnawave_user(")
     if method_start < 0:
@@ -776,20 +643,15 @@ def patch_subscription_service(source: str) -> str:
 
 
 def main() -> None:
-    for path in (TRAFFIC, STATUS, AUTH, SUBS, PROJECTION):
+    for path in (TRAFFIC, AUTH, SUBS):
         if not path.is_file():
             die("run from ~/remnawave-bedolaga-telegram-bot")
 
-    original = {
-        path: path.read_text(encoding="utf-8")
-        for path in (TRAFFIC, STATUS, AUTH, SUBS, PROJECTION)
-    }
+    original = {path: path.read_text(encoding="utf-8") for path in (TRAFFIC, AUTH, SUBS)}
     patched = {
         TRAFFIC: patch_traffic(original[TRAFFIC]),
-        STATUS: patch_status(original[STATUS]),
         AUTH: patch_auth(original[AUTH]),
         SUBS: patch_subscription_service(original[SUBS]),
-        PROJECTION: patch_projection(original[PROJECTION]),
     }
 
     for path, text in original.items():

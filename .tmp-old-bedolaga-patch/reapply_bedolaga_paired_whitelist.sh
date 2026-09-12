@@ -12,19 +12,15 @@ PATCH_COMPLETE=0
 # and contain no whitespace, so POSIX word splitting is intentional here.
 PATCH_PATHS='app/services/remnawave_service.py
 app/cabinet/routes/subscription_modules/traffic.py
-app/cabinet/routes/subscription_modules/status.py
 app/cabinet/routes/auth.py
 app/services/subscription_service.py
-app/services/panel_sync/projection.py
 app/services/paired_whitelist_limiter.py
 app/webserver/remnawave_webhook.py
 app/services/remnawave_service.py.before-paired-display
 app/cabinet/routes/subscription_modules/traffic.py.before-paired-display
 app/cabinet/routes/subscription_modules/traffic.py.before-paired-write-routing
-app/cabinet/routes/subscription_modules/status.py.before-paired-write-routing
 app/cabinet/routes/auth.py.before-paired-write-routing
 app/services/subscription_service.py.before-paired-write-routing
-app/services/panel_sync/projection.py.before-paired-write-routing
 app/webserver/remnawave_webhook.py.before-webhook-serialization'
 
 snapshot_index=0
@@ -71,9 +67,7 @@ python3 "$SCRIPT_DIR/apply_bedolaga_webhook_serialization.py"
 python3 -m py_compile \
     app/services/paired_whitelist_limiter.py \
     app/services/subscription_service.py \
-    app/services/panel_sync/projection.py \
     app/cabinet/routes/auth.py \
-    app/cabinet/routes/subscription_modules/status.py \
     app/cabinet/routes/subscription_modules/traffic.py \
     app/webserver/remnawave_webhook.py
 
