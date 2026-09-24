@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,10 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	const mainID, whiteID = 11, 22
 	var updates []map[string]any
 	whiteUsed := float64(0)
+	resetCalls := map[string]int{}
+	resetArrivals := 0
+	resetBarrier := make(chan struct{})
+	var resetMu sync.Mutex
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/users":
@@ -29,6 +34,23 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 			_, _ = w.Write([]byte(`{"response":{"id":22,"shortUuid":"white-short","username":"wl_main_11","status":"ACTIVE","trafficLimitBytes":1073741824,"trafficLimitStrategy":"NO_RESET","expireAt":"2026-12-01T00:00:00Z","activeInternalSquads":[{"uuid":"white"}],"userTraffic":{"usedTrafficBytes":` + number(whiteUsed) + `}}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/users/11":
 			_, _ = w.Write([]byte(`{"response":{"id":11,"shortUuid":"main-short","username":"main","status":"ACTIVE","trafficLimitBytes":0,"trafficLimitStrategy":"NO_RESET","expireAt":"2026-12-01T00:00:00Z","activeInternalSquads":[{"uuid":"main"}],"userTraffic":{"usedTrafficBytes":0}}}`))
+		case r.Method == http.MethodPost &&
+			(r.URL.Path == "/api/users/11/actions/reset-traffic" || r.URL.Path == "/api/users/22/actions/reset-traffic"):
+			resetMu.Lock()
+			resetCalls[r.URL.Path]++
+			resetArrivals++
+			if resetArrivals == 2 {
+				close(resetBarrier)
+			}
+			resetMu.Unlock()
+			// The first request waits for the second one. A sequential
+			// implementation therefore fails instead of passing by accident.
+			select {
+			case <-resetBarrier:
+				w.WriteHeader(http.StatusNoContent)
+			case <-time.After(time.Second):
+				w.WriteHeader(http.StatusGatewayTimeout)
+			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -214,6 +236,35 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	pair, err = store.GetPairByMainUserID(mainID)
 	if err != nil || !pair.Enabled || pair.WhiteUserID != whiteID || !result.Paired {
 		t.Fatalf("re-enabled pair must reuse original technical user: %#v, %#v, %v", pair, result, err)
+	}
+
+	resetMu.Lock()
+	resetCountBeforeRenewal := len(resetCalls)
+	resetMu.Unlock()
+	if resetCountBeforeRenewal != 0 {
+		t.Fatalf("tariff switches must preserve traffic, got resets: %#v", resetCalls)
+	}
+
+	// A new billing period is one paired operation: both reset requests must
+	// be in flight together, keeping the Main and WhiteList counters aligned.
+	result, err = processor.ApplyPairedWhiteListIntent(main, PairingIntent{
+		Enabled:              true,
+		TrafficLimitBytes:    &newQuota,
+		TrafficLimitStrategy: &strategy,
+		ExpireAt:             &expiry,
+		Status:               &activeStatus,
+		ActiveInternalSquads: &pairedSquads,
+		ResetWhiteTraffic:    true,
+	})
+	if err != nil || !result.Paired {
+		t.Fatalf("paired billing reset failed: %#v, %v", result, err)
+	}
+	resetMu.Lock()
+	mainResets := resetCalls["/api/users/11/actions/reset-traffic"]
+	whiteResets := resetCalls["/api/users/22/actions/reset-traffic"]
+	resetMu.Unlock()
+	if mainResets != 1 || whiteResets != 1 {
+		t.Fatalf("billing reset must reset Main and WhiteList once: %#v", resetCalls)
 	}
 }
 

@@ -230,9 +230,9 @@ func (c *Client) UpdateSquads(userID int64, activeSquads []string) error {
 	return c.UpdateUserSettings(userID, activeSquads, nil)
 }
 
-// ResetUserTraffic resets the native Remnawave counter.  The paired limiter
-// calls it only on an explicit new-billing-period command; a tariff downgrade
-// or upgrade must never silently erase already consumed WhiteList traffic.
+// ResetUserTraffic resets one native Remnawave counter. On an explicit new
+// billing period the paired limiter calls it concurrently for Main and its
+// WhiteList companion; tariff changes and top-ups never trigger this method.
 func (c *Client) ResetUserTraffic(userID int64) error {
 	if userID <= 0 {
 		return fmt.Errorf("user id is required")

@@ -184,7 +184,7 @@ async def sync_tariff_pairing(
         return False
 
     limit_gb = target_traffic_limit_gb(subscription)
-    # Bedolaga v4.10.0 may already have imported Main's technical zero before
+    # Bedolaga v4.10+ may already have imported Main's technical zero before
     # this patch was installed. Recover the exact companion quota (including
     # top-ups) when the tariff itself still says that pairing is required.
     if desired and int(getattr(subscription, "traffic_limit_gb", 0) or 0) == 0:
@@ -209,8 +209,9 @@ async def sync_tariff_pairing(
             "expireAt": end_date.isoformat(),
             "status": "ACTIVE" if is_active else "DISABLED",
             "activeInternalSquads": _target_squads(subscription),
-            # Only renewal/reset paths pass True. Tariff changes and top-ups
-            # preserve spent WhiteList traffic by default.
+            # Only renewal/reset paths pass True. The legacy field name is
+            # retained, while the limiter resets Main and WhiteList together.
+            # Tariff changes and top-ups preserve spent traffic.
             "resetWhiteTraffic": bool(reset_white_traffic and desired),
         }
         request = Request(
@@ -484,7 +485,7 @@ def patch_projection(source: str) -> str:
     if paired_mode_for_subscription(subscription) is True and snapshot.traffic_limit_gb == 0:
         # Paired Main's zero is an implementation detail: the companion owns
         # the real counter and Main carries only its non-WhiteList squads.
-        # Bedolaga v4.10 treats the panel as authoritative, so mask these three
+        # Bedolaga v4.10+ treats the panel as authoritative, so mask these three
         # technical fields before every shared panel -> bot projection.
         snapshot = replace(
             snapshot,
@@ -538,7 +539,7 @@ def patch_status(source: str) -> str:
             }
         )
 
-        # Repair only the v4.10 corruption signature: DB says unlimited while
+        # Repair only the v4.10+ corruption signature: DB says unlimited while
         # the current tariff is finite and paired. Never persist an old quota
         # over a legitimate unlimited tariff or a finite-to-finite switch.
         tariff_limit_gb = int(getattr(getattr(subscription, 'tariff', None), 'traffic_limit_gb', 0) or 0)

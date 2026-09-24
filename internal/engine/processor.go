@@ -2,6 +2,7 @@ package engine
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -42,7 +43,9 @@ type PairingIntent struct {
 	ExpireAt             *string
 	Status               *string
 	ActiveInternalSquads *[]string
-	ResetWhiteTraffic    bool
+	// ResetWhiteTraffic keeps the legacy wire name, but a true value resets
+	// both identities of an active pair in one limiter operation.
+	ResetWhiteTraffic bool
 }
 
 func NewProcessor(panelURL, token, basicSquad, whitelistSquad string, _ ...string) (*Processor, error) {
@@ -265,7 +268,16 @@ func (p *Processor) ApplyPairedWhiteListIntent(main *User, intent PairingIntent)
 		if !contains(effective.ActiveInternalSquads, p.WhitelistSquadUUID) {
 			effective.ActiveInternalSquads = append(effective.ActiveInternalSquads, p.WhitelistSquadUUID)
 		}
-		return p.ReconcilePairedWhiteList(&effective)
+		result, reconcileErr := p.ReconcilePairedWhiteList(&effective)
+		if reconcileErr != nil {
+			return nil, reconcileErr
+		}
+		if intent.ResetWhiteTraffic && result.Paired {
+			if resetErr := p.resetPairedTraffic(result.MainUserID, result.WhiteUserID); resetErr != nil {
+				return nil, resetErr
+			}
+		}
+		return result, nil
 	}
 	if err != nil {
 		return nil, err
@@ -314,11 +326,40 @@ func (p *Processor) ApplyPairedWhiteListIntent(main *User, intent PairingIntent)
 		return nil, err
 	}
 	if intent.ResetWhiteTraffic {
-		if err := p.Client.ResetUserTraffic(pair.WhiteUserID); err != nil {
-			return nil, fmt.Errorf("reset WhiteList companion traffic: %w", err)
+		if err := p.resetPairedTraffic(pair.MainUserID, pair.WhiteUserID); err != nil {
+			return nil, err
 		}
 	}
 	return p.syncPair(&effective, pair)
+}
+
+// resetPairedTraffic starts both native counter resets before waiting for
+// either response. Remnawave has no atomic two-user endpoint, so concurrent
+// idempotent requests are the narrowest possible reset window. Both requests
+// are always attempted; a retry safely repeats a reset that already succeeded.
+func (p *Processor) resetPairedTraffic(mainUserID, whiteUserID int64) error {
+	type resetResult struct {
+		name string
+		err  error
+	}
+	results := make(chan resetResult, 2)
+	reset := func(name string, userID int64) {
+		results <- resetResult{name: name, err: p.Client.ResetUserTraffic(userID)}
+	}
+	go reset("Main", mainUserID)
+	go reset("WhiteList companion", whiteUserID)
+
+	var failures []error
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			failures = append(failures, fmt.Errorf("reset %s traffic: %w", result.name, result.err))
+		}
+	}
+	if err := errors.Join(failures...); err != nil {
+		return fmt.Errorf("reset paired traffic: %w", err)
+	}
+	return nil
 }
 
 // applySingleTarget returns control to the original account.  The squads are

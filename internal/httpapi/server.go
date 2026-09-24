@@ -621,7 +621,8 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		ExpireAt             *string   `json:"expireAt"`
 		Status               *string   `json:"status"`
 		ActiveInternalSquads *[]string `json:"activeInternalSquads"`
-		ResetWhiteTraffic    bool      `json:"resetWhiteTraffic"`
+		// Legacy wire name: a true value resets Main and WhiteList together.
+		ResetWhiteTraffic bool `json:"resetWhiteTraffic"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Enabled == nil ||
 		request.TrafficLimitBytes == nil || request.TrafficLimitStrategy == nil || request.ExpireAt == nil ||

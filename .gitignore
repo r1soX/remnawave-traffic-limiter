@@ -1,28 +1,62 @@
-# Binaries
-/bin/
-*.exe
-
-# Build artifacts
-coverage.out
-.tmp-go-cache/
-__pycache__/
-*.py[cod]
-*.zip
-*.bak
-*.tmp
-
-# Editor and operating-system files
-.DS_Store
-.idea/
-.vscode/
-
-# Local env
+# Secrets and machine-local configuration
 .env
+.env.*
+!.env.example
+/Caddyfile
+/docker-compose.override.yml
 
-# SQLite
+# Runtime state
+/data/
+/logs/
+*.log
 *.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 
-# Go
+# Go build, test and profiling artifacts
+/bin/
+/remnawave-traffic-limiter
+*.exe
 *.test
 *.out
+*.prof
+coverage.out
+*.coverprofile
+/coverage/
+go.work
+go.work.sum
+
+# Python caches and tooling state used by the Bedolaga patchers
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Temporary clones, build directories and patch backups
+.tmp*/
+*.tmp
+*.bak
+*.before-*
+*.orig
+*.rej
+/build/
+/dist/
+
+# Generated release archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
