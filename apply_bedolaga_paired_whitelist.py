@@ -157,9 +157,14 @@ def _target_squads(subscription: Any) -> list[str]:
 
 
 def reset_is_new_billing_period(reset_traffic: bool, reset_reason: str | None) -> bool:
-    """A tariff switch must apply the new quota but preserve WhiteList usage."""
-    reason = str(reset_reason or "").casefold()
-    return bool(reset_traffic) and "тариф" not in reason and "tariff" not in reason
+    """Honor Bedolaga's reset decision for both members of the pair.
+
+    Bedolaga has separate settings and policies for payments, renewals and
+    tariff switches.  Reinterpreting ``reset_reason`` here would override
+    those settings (notably ``продление тарифа`` used to look like a switch).
+    """
+    del reset_reason
+    return bool(reset_traffic)
 
 
 async def sync_tariff_pairing(
@@ -209,9 +214,10 @@ async def sync_tariff_pairing(
             "expireAt": end_date.isoformat(),
             "status": "ACTIVE" if is_active else "DISABLED",
             "activeInternalSquads": _target_squads(subscription),
-            # Only renewal/reset paths pass True. The legacy field name is
-            # retained, while the limiter resets Main and WhiteList together.
-            # Tariff changes and top-ups preserve spent traffic.
+            # The legacy field name is retained, while the limiter resets
+            # Main and WhiteList together whenever Bedolaga requests it.
+            # Bedolaga decides whether renewals, switches and other actions
+            # reset traffic; the limiter applies that decision to both users.
             "resetWhiteTraffic": bool(reset_white_traffic and desired),
         }
         request = Request(

@@ -653,6 +653,13 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "paired transition failed"})
 		return
 	}
+	if request.ResetWhiteTraffic && result.Paired {
+		slog.Info(
+			"paired traffic counters reset",
+			"main_user", result.MainUserID,
+			"white_user", result.WhiteUserID,
+		)
+	}
 	// Do not retain a stale BLOCKED diagnostic state after a switch back to a
 	// Main-only tariff. Conversely, a 150 -> 50 GiB downgrade may immediately
 	// exhaust WhiteList and must be reflected without waiting for polling.
