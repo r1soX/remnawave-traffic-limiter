@@ -57,6 +57,7 @@ type UserUpdateOptions struct {
 	TrafficLimitBytes    *float64
 	TrafficLimitStrategy *string
 	ExpireAt             *string
+	HWIDDeviceLimit      *int64
 	ActiveInternalSquads []string
 }
 
@@ -257,6 +258,35 @@ func (c *Client) ResetUserTraffic(userID int64) error {
 	return nil
 }
 
+// DeleteUser removes a panel identity. A missing user is already in the
+// desired state, which makes deletion-webhook retries safe and idempotent.
+func (c *Client) DeleteUser(userID int64) error {
+	if userID <= 0 {
+		return fmt.Errorf("user id is required")
+	}
+	request, err := http.NewRequest(
+		http.MethodDelete,
+		fmt.Sprintf("%s/api/users/%d", c.BaseURL, userID),
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.Token)
+	response, err := c.Client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("request DELETE %s failed: %s", request.URL.String(), response.Status)
+	}
+	return nil
+}
+
 // UpdateUserSettings updates squad membership and, when provided, the panel's
 // global traffic limit. A zero limit means unlimited in Remnawave.
 func (c *Client) UpdateUserSettings(userID int64, activeSquads []string, trafficLimitBytes *float64) error {
@@ -284,6 +314,9 @@ func (c *Client) UpdateUser(options UserUpdateOptions) error {
 	}
 	if options.ExpireAt != nil {
 		payload["expireAt"] = *options.ExpireAt
+	}
+	if options.HWIDDeviceLimit != nil {
+		payload["hwidDeviceLimit"] = *options.HWIDDeviceLimit
 	}
 	if options.Status != nil {
 		payload["status"] = *options.Status

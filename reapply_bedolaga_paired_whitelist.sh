@@ -12,6 +12,7 @@ PATCH_COMPLETE=0
 # and contain no whitespace, so POSIX word splitting is intentional here.
 PATCH_PATHS='app/services/remnawave_service.py
 app/cabinet/routes/subscription_modules/traffic.py
+app/cabinet/routes/subscription_modules/devices.py
 app/cabinet/routes/subscription_modules/status.py
 app/cabinet/routes/auth.py
 app/services/subscription_service.py
@@ -21,6 +22,7 @@ app/webserver/remnawave_webhook.py
 app/services/remnawave_service.py.before-paired-display
 app/cabinet/routes/subscription_modules/traffic.py.before-paired-display
 app/cabinet/routes/subscription_modules/traffic.py.before-paired-write-routing
+app/cabinet/routes/subscription_modules/devices.py.before-paired-device-sync
 app/cabinet/routes/subscription_modules/status.py.before-paired-write-routing
 app/cabinet/routes/auth.py.before-paired-write-routing
 app/services/subscription_service.py.before-paired-write-routing
@@ -66,6 +68,7 @@ if ! grep -q "async def _paired_limiter_traffic" app/cabinet/routes/subscription
 fi
 
 python3 "$SCRIPT_DIR/apply_bedolaga_paired_whitelist.py"
+python3 "$SCRIPT_DIR/apply_bedolaga_device_sync.py"
 python3 "$SCRIPT_DIR/apply_bedolaga_webhook_serialization.py"
 
 python3 -m py_compile \
@@ -75,6 +78,7 @@ python3 -m py_compile \
     app/cabinet/routes/auth.py \
     app/cabinet/routes/subscription_modules/status.py \
     app/cabinet/routes/subscription_modules/traffic.py \
+    app/cabinet/routes/subscription_modules/devices.py \
     app/webserver/remnawave_webhook.py
 
 PATCH_COMPLETE=1

@@ -42,6 +42,7 @@ type PairingIntent struct {
 	TrafficLimitStrategy *string
 	ExpireAt             *string
 	Status               *string
+	HWIDDeviceLimit      *int64
 	ActiveInternalSquads *[]string
 	// ResetWhiteTraffic keeps the legacy wire name, but a true value resets
 	// both identities of an active pair in one limiter operation.
@@ -103,6 +104,63 @@ func (p *Processor) ListUsers() ([]*User, error) {
 		users = append(users, userFromAPI(&apiUsers[i]))
 	}
 	return users, nil
+}
+
+// FindPairForUser resolves a deletion webhook without querying the deleted
+// panel identity. The bool reports whether the identifier belongs to Main.
+func (p *Processor) FindPairForUser(userID int64, shortUUID string) (*state.PairedUser, bool, error) {
+	if p == nil || p.store == nil {
+		return nil, false, fmt.Errorf("paired store is not configured")
+	}
+	if userID > 0 {
+		if pair, err := p.store.GetPairByMainUserID(userID); err == nil {
+			return pair, true, nil
+		} else if err != sql.ErrNoRows {
+			return nil, false, err
+		}
+		if pair, err := p.store.GetPairByWhiteUserID(userID); err == nil {
+			return pair, false, nil
+		} else if err != sql.ErrNoRows {
+			return nil, false, err
+		}
+	}
+	shortUUID = strings.TrimSpace(shortUUID)
+	if shortUUID != "" {
+		if pair, err := p.store.GetPairByMainShortUUID(shortUUID); err == nil {
+			return pair, true, nil
+		} else if err != sql.ErrNoRows {
+			return nil, false, err
+		}
+		if pair, err := p.store.GetPairByWhiteShortUUID(shortUUID); err == nil {
+			return pair, false, nil
+		} else if err != sql.ErrNoRows {
+			return nil, false, err
+		}
+	}
+	return nil, false, sql.ErrNoRows
+}
+
+// HandlePairedUserDeleted keeps the pair lifecycle symmetric. Deleting Main
+// cascades to its technical WhiteList identity; deleting only the technical
+// identity drops the stale mapping so reconciliation can recreate it. The
+// mapping is retained when the panel deletion fails, allowing a later retry.
+func (p *Processor) HandlePairedUserDeleted(userID int64, shortUUID string) (bool, error) {
+	pair, deletedWasMain, err := p.FindPairForUser(userID, shortUUID)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if deletedWasMain {
+		if err := p.Client.DeleteUser(pair.WhiteUserID); err != nil {
+			return true, fmt.Errorf("delete WhiteList companion %d: %w", pair.WhiteUserID, err)
+		}
+	}
+	if err := p.store.DeletePair(pair.MainUserID); err != nil {
+		return true, fmt.Errorf("delete paired state for Main %d: %w", pair.MainUserID, err)
+	}
+	return true, nil
 }
 
 func userFromAPI(u *remnawave.User) *User {
@@ -175,7 +233,7 @@ func (p *Processor) createPair(main *User) (*ReconcileResult, error) {
 	}
 	zero := float64(0)
 	mainStatus := activeStatus(main.Status)
-	if err := p.Client.UpdateUser(remnawave.UserUpdateOptions{ID: main.ID, Status: &mainStatus, TrafficLimitBytes: &zero, TrafficLimitStrategy: stringPtr(main.TrafficLimitStrategy), ExpireAt: stringPtr(main.ExpireAt), ActiveInternalSquads: mainOnlySquads(main.ActiveInternalSquads, p.WhitelistSquadUUID, p.LimitNoticeSquadUUID, p.BasicSquadUUID)}); err != nil {
+	if err := p.Client.UpdateUser(remnawave.UserUpdateOptions{ID: main.ID, Status: &mainStatus, TrafficLimitBytes: &zero, TrafficLimitStrategy: stringPtr(main.TrafficLimitStrategy), ExpireAt: stringPtr(main.ExpireAt), HWIDDeviceLimit: int64Ptr(main.HWIDDeviceLimit), ActiveInternalSquads: mainOnlySquads(main.ActiveInternalSquads, p.WhitelistSquadUUID, p.LimitNoticeSquadUUID, p.BasicSquadUUID)}); err != nil {
 		return nil, fmt.Errorf("make Main user unlimited: %w", err)
 	}
 	pair := state.PairedUser{MainUserID: main.ID, MainShortUUID: main.ShortUUID, WhiteUserID: white.ID, WhiteShortUUID: white.ShortUUID, QuotaBytes: int64(main.TrafficLimitBytes), TrafficStrategy: main.TrafficLimitStrategy, ExpireAt: main.ExpireAt, LastSourceLimit: int64(main.TrafficLimitBytes), LastSourceExpireAt: main.ExpireAt, State: state.StateActive, Enabled: true}
@@ -201,7 +259,7 @@ func (p *Processor) syncPair(main *User, pair *state.PairedUser) (*ReconcileResu
 	}
 	zero := float64(0)
 	mainStatus := activeStatus(main.Status)
-	if err := p.Client.UpdateUser(remnawave.UserUpdateOptions{ID: main.ID, Status: &mainStatus, TrafficLimitBytes: &zero, TrafficLimitStrategy: stringPtr(pair.TrafficStrategy), ExpireAt: stringPtr(pair.ExpireAt), ActiveInternalSquads: mainOnlySquads(main.ActiveInternalSquads, p.WhitelistSquadUUID, p.LimitNoticeSquadUUID, p.BasicSquadUUID)}); err != nil {
+	if err := p.Client.UpdateUser(remnawave.UserUpdateOptions{ID: main.ID, Status: &mainStatus, TrafficLimitBytes: &zero, TrafficLimitStrategy: stringPtr(pair.TrafficStrategy), ExpireAt: stringPtr(pair.ExpireAt), HWIDDeviceLimit: int64Ptr(main.HWIDDeviceLimit), ActiveInternalSquads: mainOnlySquads(main.ActiveInternalSquads, p.WhitelistSquadUUID, p.LimitNoticeSquadUUID, p.BasicSquadUUID)}); err != nil {
 		return nil, fmt.Errorf("sync Main user: %w", err)
 	}
 	exhausted := pair.QuotaBytes > 0 && int64(white.UsedTrafficBytes) >= pair.QuotaBytes || strings.EqualFold(white.Status, "LIMITED")
@@ -211,7 +269,7 @@ func (p *Processor) syncPair(main *User, pair *state.PairedUser) (*ReconcileResu
 	}
 	quota := float64(pair.QuotaBytes)
 	whiteStatus := activeStatus(main.Status)
-	if err := p.Client.UpdateUser(remnawave.UserUpdateOptions{ID: white.ID, Status: &whiteStatus, TrafficLimitBytes: &quota, TrafficLimitStrategy: stringPtr(pair.TrafficStrategy), ExpireAt: stringPtr(pair.ExpireAt), ActiveInternalSquads: whiteSquads}); err != nil {
+	if err := p.Client.UpdateUser(remnawave.UserUpdateOptions{ID: white.ID, Status: &whiteStatus, TrafficLimitBytes: &quota, TrafficLimitStrategy: stringPtr(pair.TrafficStrategy), ExpireAt: stringPtr(pair.ExpireAt), HWIDDeviceLimit: int64Ptr(main.HWIDDeviceLimit), ActiveInternalSquads: whiteSquads}); err != nil {
 		return nil, fmt.Errorf("sync WhiteList user: %w", err)
 	}
 	pair.State = desiredState
@@ -252,6 +310,9 @@ func (p *Processor) ApplyPairedWhiteListIntent(main *User, intent PairingIntent)
 	}
 	if intent.Status != nil {
 		effective.Status = *intent.Status
+	}
+	if intent.HWIDDeviceLimit != nil {
+		effective.HWIDDeviceLimit = *intent.HWIDDeviceLimit
 	}
 	if intent.ActiveInternalSquads != nil {
 		effective.ActiveInternalSquads = append([]string(nil), (*intent.ActiveInternalSquads)...)
@@ -295,6 +356,7 @@ func (p *Processor) ApplyPairedWhiteListIntent(main *User, intent PairingIntent)
 			ID:                   pair.WhiteUserID,
 			Status:               &disabled,
 			TrafficLimitBytes:    &zero,
+			HWIDDeviceLimit:      int64Ptr(0),
 			ActiveInternalSquads: []string{},
 		}); err != nil {
 			return nil, fmt.Errorf("disable WhiteList companion: %w", err)
@@ -380,6 +442,7 @@ func (p *Processor) applySingleTarget(main *User) error {
 		TrafficLimitBytes:    &limit,
 		TrafficLimitStrategy: stringPtr(main.TrafficLimitStrategy),
 		ExpireAt:             stringPtr(main.ExpireAt),
+		HWIDDeviceLimit:      int64Ptr(main.HWIDDeviceLimit),
 		ActiveInternalSquads: removeSquads(main.ActiveInternalSquads),
 	}); err != nil {
 		return fmt.Errorf("restore Main user target: %w", err)
@@ -463,3 +526,5 @@ func activeStatus(status string) string {
 	return status
 }
 func stringPtr(s string) *string { return &s }
+
+func int64Ptr(value int64) *int64 { return &value }

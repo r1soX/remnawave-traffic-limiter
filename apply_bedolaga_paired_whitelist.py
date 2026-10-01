@@ -42,6 +42,8 @@ from urllib.request import Request, urlopen
 
 import structlog
 
+from app.utils.subscription_utils import resolve_hwid_device_limit_for_payload
+
 logger = structlog.get_logger(__name__)
 
 
@@ -197,6 +199,8 @@ async def sync_tariff_pairing(
         if virtual_traffic and int(virtual_traffic["limit_bytes"]) > 0:
             limit_gb = int(virtual_traffic["limit_gb"])
 
+    device_limit = int(resolve_hwid_device_limit_for_payload(subscription) or 0)
+
     def send() -> None:
         end_date = getattr(subscription, "end_date", None)
         if end_date is None:
@@ -213,6 +217,7 @@ async def sync_tariff_pairing(
             "trafficLimitStrategy": strategy_text,
             "expireAt": end_date.isoformat(),
             "status": "ACTIVE" if is_active else "DISABLED",
+            "hwidDeviceLimit": device_limit,
             "activeInternalSquads": _target_squads(subscription),
             # The legacy field name is retained, while the limiter resets
             # Main and WhiteList together whenever Bedolaga requests it.
@@ -242,6 +247,7 @@ async def sync_tariff_pairing(
             short_uuid=short_uuid,
             paired=desired,
             traffic_limit_gb=limit_gb,
+            device_limit=device_limit,
             tariff_id=getattr(subscription, "tariff_id", None),
         )
         return True

@@ -333,6 +333,15 @@ func (s *Server) processWebhookEvent(event *webhook.Event) {
 		slog.Warn("webhook ignored: no resolvable user identifier", "event", event.Event)
 		return
 	}
+	// A deleted user can no longer be fetched from Remnawave. Resolve the pair
+	// from SQLite before the normal API-based path and cascade Main deletion to
+	// the technical WhiteList account.
+	if strings.EqualFold(strings.TrimSpace(event.Event), "user.deleted") {
+		if s.proc.PairedWhiteListEnabled() {
+			s.processPairedUserDeleted(event)
+		}
+		return
+	}
 	user, err := s.proc.ResolveUser(identifier)
 	if err != nil {
 		slog.Warn("user resolution failed", "identifier", identifier, "event", event.Event, "error", err)
@@ -384,6 +393,43 @@ func (s *Server) processWebhookEvent(event *webhook.Event) {
 	slog.Info("webhook processed", "user", user.ID, "event", event.Event)
 }
 
+func (s *Server) processPairedUserDeleted(event *webhook.Event) {
+	pair, deletedWasMain, err := s.proc.FindPairForUser(event.Data.ID, event.Data.ShortUUID)
+	if err == sql.ErrNoRows {
+		slog.Debug("deleted user had no paired WhiteList state", "user", event.Data.ID)
+		return
+	}
+	if err != nil {
+		slog.Error("failed to resolve deleted paired user", "user", event.Data.ID, "error", err)
+		return
+	}
+	lockKey := "user-id:" + strconv.FormatInt(pair.MainUserID, 10)
+	actual, _ := s.locks.LoadOrStore(lockKey, &sync.Mutex{})
+	mutex := actual.(*sync.Mutex)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	handled, err := s.proc.HandlePairedUserDeleted(event.Data.ID, event.Data.ShortUUID)
+	if err != nil {
+		slog.Error(
+			"paired user deletion failed",
+			"main_user", pair.MainUserID,
+			"deleted_user", event.Data.ID,
+			"main_deleted", deletedWasMain,
+			"error", err,
+		)
+		return
+	}
+	if handled {
+		slog.Info(
+			"paired user deletion completed",
+			"main_user", pair.MainUserID,
+			"white_user", pair.WhiteUserID,
+			"main_deleted", deletedWasMain,
+		)
+	}
+}
+
 // ReconcileWhiteListUsers creates/synchronizes finite WhiteList pairs. It is
 // invoked by the periodic runner and never needs Bedolaga identity fields.
 func (s *Server) ReconcileWhiteListUsers() error {
@@ -395,6 +441,44 @@ func (s *Server) ReconcileWhiteListUsers() error {
 		return err
 	}
 	var errs []error
+	presentUserIDs := make(map[int64]struct{}, len(users))
+	for _, user := range users {
+		presentUserIDs[user.ID] = struct{}{}
+	}
+	pairs, err := s.store.ListPairs()
+	if err != nil {
+		return fmt.Errorf("list paired users: %w", err)
+	}
+	for _, pair := range pairs {
+		_, mainPresent := presentUserIDs[pair.MainUserID]
+		_, whitePresent := presentUserIDs[pair.WhiteUserID]
+		if mainPresent && whitePresent {
+			continue
+		}
+		lockKey := "user-id:" + strconv.FormatInt(pair.MainUserID, 10)
+		actual, _ := s.locks.LoadOrStore(lockKey, &sync.Mutex{})
+		mutex := actual.(*sync.Mutex)
+		mutex.Lock()
+		deletedUserID, deletedShortUUID := pair.MainUserID, pair.MainShortUUID
+		if mainPresent {
+			deletedUserID, deletedShortUUID = pair.WhiteUserID, pair.WhiteShortUUID
+		}
+		handled, cleanupErr := s.proc.HandlePairedUserDeleted(deletedUserID, deletedShortUUID)
+		mutex.Unlock()
+		if cleanupErr != nil {
+			errs = append(errs, fmt.Errorf("clean orphaned pair for Main %d: %w", pair.MainUserID, cleanupErr))
+			continue
+		}
+		if handled {
+			slog.Info(
+				"orphaned paired user state cleaned",
+				"main_user", pair.MainUserID,
+				"white_user", pair.WhiteUserID,
+				"main_present", mainPresent,
+				"white_present", whitePresent,
+			)
+		}
+	}
 	for _, user := range users {
 		if !s.cfg.PairingAllowed(user.ShortUUID) {
 			continue
@@ -620,6 +704,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		TrafficLimitStrategy *string   `json:"trafficLimitStrategy"`
 		ExpireAt             *string   `json:"expireAt"`
 		Status               *string   `json:"status"`
+		HWIDDeviceLimit      *int64    `json:"hwidDeviceLimit"`
 		ActiveInternalSquads *[]string `json:"activeInternalSquads"`
 		// Legacy wire name: a true value resets Main and WhiteList together.
 		ResetWhiteTraffic bool `json:"resetWhiteTraffic"`
@@ -643,6 +728,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		TrafficLimitStrategy: request.TrafficLimitStrategy,
 		ExpireAt:             request.ExpireAt,
 		Status:               request.Status,
+		HWIDDeviceLimit:      request.HWIDDeviceLimit,
 		ActiveInternalSquads: request.ActiveInternalSquads,
 		ResetWhiteTraffic:    request.ResetWhiteTraffic,
 	})
@@ -668,6 +754,10 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = s.store.SetActive(user.ShortUUID)
 	}
+	deviceLimit := user.HWIDDeviceLimit
+	if request.HWIDDeviceLimit != nil {
+		deviceLimit = *request.HWIDDeviceLimit
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":            "ok",
@@ -675,6 +765,7 @@ func (s *Server) handlePairing(w http.ResponseWriter, r *http.Request) {
 		"enabled":           *request.Enabled,
 		"paired":            result.Paired,
 		"trafficLimitBytes": result.TrafficLimit,
+		"hwidDeviceLimit":   deviceLimit,
 	})
 }
 

@@ -172,7 +172,57 @@ func (s *Store) GetPairByWhiteUserID(whiteUserID int64) (*PairedUser, error) {
 	return s.getPair(`white_user_id = ?`, whiteUserID)
 }
 
-func (s *Store) getPair(where string, value int64) (*PairedUser, error) {
+func (s *Store) GetPairByMainShortUUID(shortUUID string) (*PairedUser, error) {
+	return s.getPair(`main_short_uuid = ?`, shortUUID)
+}
+
+func (s *Store) GetPairByWhiteShortUUID(shortUUID string) (*PairedUser, error) {
+	return s.getPair(`white_short_uuid = ?`, shortUUID)
+}
+
+func (s *Store) ListPairs() ([]PairedUser, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT main_user_id, main_short_uuid, white_user_id,
+		white_short_uuid, quota_bytes, traffic_strategy, expire_at,
+		last_source_limit, last_source_expire_at, state, paired_enabled,
+		created_at, updated_at FROM paired_users`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pairs := make([]PairedUser, 0)
+	for rows.Next() {
+		var pair PairedUser
+		if err := rows.Scan(
+			&pair.MainUserID, &pair.MainShortUUID, &pair.WhiteUserID, &pair.WhiteShortUUID,
+			&pair.QuotaBytes, &pair.TrafficStrategy, &pair.ExpireAt, &pair.LastSourceLimit,
+			&pair.LastSourceExpireAt, &pair.State, &pair.Enabled, &pair.CreatedAt, &pair.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		pairs = append(pairs, pair)
+	}
+	return pairs, rows.Err()
+}
+
+func (s *Store) DeletePair(mainUserID int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store is nil")
+	}
+	if mainUserID <= 0 {
+		return fmt.Errorf("main user id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM paired_users WHERE main_user_id = ?`, mainUserID)
+	return err
+}
+
+func (s *Store) getPair(where string, value any) (*PairedUser, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store is nil")
 	}

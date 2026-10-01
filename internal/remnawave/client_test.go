@@ -61,3 +61,32 @@ func TestResetUserTrafficUsesEmptyPostBody(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeleteUserIsIdempotentAndUsesEmptyBody(t *testing.T) {
+	for _, statusCode := range []int{http.StatusNoContent, http.StatusNotFound} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete || r.URL.Path != "/api/users/42" {
+					t.Fatalf("unexpected delete request: %s %s", r.Method, r.URL.Path)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(body) != 0 {
+					t.Fatalf("delete request must have no body, got %q", body)
+				}
+				w.WriteHeader(statusCode)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(server.URL, "token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.DeleteUser(42); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

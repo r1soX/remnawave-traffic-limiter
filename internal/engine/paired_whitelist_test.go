@@ -16,6 +16,7 @@ import (
 func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	const mainID, whiteID = 11, 22
 	var updates []map[string]any
+	var creates []map[string]any
 	whiteUsed := float64(0)
 	resetCalls := map[string]int{}
 	resetArrivals := 0
@@ -24,6 +25,9 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/users":
+			var create map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&create)
+			creates = append(creates, create)
 			_, _ = w.Write([]byte(`{"response":{"id":22,"shortUuid":"white-short","username":"wl_main_11","status":"ACTIVE","trafficLimitBytes":1073741824,"trafficLimitStrategy":"NO_RESET","expireAt":"2026-12-01T00:00:00Z","activeInternalSquads":[{"uuid":"white"}],"userTraffic":{"usedTrafficBytes":0}}}`))
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/users":
 			var update map[string]any
@@ -69,7 +73,7 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	if err := processor.ConfigurePairedWhiteList(store, "notice"); err != nil {
 		t.Fatal(err)
 	}
-	main := &User{ID: mainID, ShortUUID: "main-short", Username: "main", Status: "ACTIVE", TrafficLimitBytes: 1 << 30, TrafficLimitStrategy: "NO_RESET", ExpireAt: time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339), ActiveInternalSquads: []string{"main", "white"}}
+	main := &User{ID: mainID, ShortUUID: "main-short", Username: "main", Status: "ACTIVE", TrafficLimitBytes: 1 << 30, TrafficLimitStrategy: "NO_RESET", ExpireAt: time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339), HWIDDeviceLimit: 3, ActiveInternalSquads: []string{"main", "white"}}
 	// A WhiteList-only tariff must remain one native panel user. It must not
 	// create a technical companion or inject the Main squad.
 	whiteOnlyQuota := int64(5 << 30)
@@ -126,6 +130,9 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	if !result.Paired || result.WhiteUserID != whiteID || result.State != state.StateActive {
 		t.Fatalf("unexpected create result: %#v", result)
 	}
+	if len(creates) != 1 || creates[0]["hwidDeviceLimit"] != float64(3) {
+		t.Fatalf("companion must inherit Main device limit: %#v", creates)
+	}
 	mainWasMadeUnlimited := false
 	for _, update := range updates {
 		if update["id"] == float64(mainID) && update["trafficLimitBytes"] == float64(0) {
@@ -164,6 +171,7 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	// After pairing, Main remains unlimited. A new tariff quota must therefore
 	// come from the explicit Bedolaga transition intent, not from Main's zero.
 	newQuota := int64(20 << 30)
+	newDeviceLimit := int64(5)
 	strategy, expiry, activeStatus := "MONTH", "2026-12-31T00:00:00Z", "ACTIVE"
 	pairedSquads := []string{"main", "white"}
 	result, err = processor.ApplyPairedWhiteListIntent(main, PairingIntent{
@@ -172,6 +180,7 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 		TrafficLimitStrategy: &strategy,
 		ExpireAt:             &expiry,
 		Status:               &activeStatus,
+		HWIDDeviceLimit:      &newDeviceLimit,
 		ActiveInternalSquads: &pairedSquads,
 	})
 	if err != nil {
@@ -181,6 +190,18 @@ func TestPairedWhiteListCreatesCompanionAndBlocksOnlyIt(t *testing.T) {
 	if err != nil || pair.QuotaBytes != newQuota || !result.Paired {
 		t.Fatalf("tariff intent must replace companion quota: %#v, %#v, %v", pair, result, err)
 	}
+	mainDeviceLimitSynced, whiteDeviceLimitSynced := false, false
+	for _, update := range updates {
+		if update["hwidDeviceLimit"] != float64(newDeviceLimit) {
+			continue
+		}
+		mainDeviceLimitSynced = mainDeviceLimitSynced || update["id"] == float64(mainID)
+		whiteDeviceLimitSynced = whiteDeviceLimitSynced || update["id"] == float64(whiteID)
+	}
+	if !mainDeviceLimitSynced || !whiteDeviceLimitSynced {
+		t.Fatalf("device limit must be synchronized to Main and WhiteList: %#v", updates)
+	}
+	main.HWIDDeviceLimit = newDeviceLimit
 
 	// A downgrade retains the companion but removes it from service. A later
 	// LTE upgrade must reactivate that same account rather than create another.
